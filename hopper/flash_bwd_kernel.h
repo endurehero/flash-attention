@@ -287,7 +287,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
             warpgroup_wait<1>();
             // Reshape tSrS from ((2, 2, V), MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, V, MMA_N))
             Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
-            flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+            flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
             // if (cute::thread0()) { print_tensor(scores); printf("\n"); }
             // Convert scores from fp32 to fp16/bf16
             Tensor rP = flash::convert_type<Element>(tSrS);
@@ -465,7 +465,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
             warpgroup_wait<1>();
             // Reshape tSrS from ((2, 2, V), MMA_N, MMA_M) to (nrow=(2, V, MMA_M), ncol=(2, MMA_N))
             Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_transposed_rowcol(tSrS.layout()));
-            flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+            flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
             // if (cute::thread0()) { print_tensor(scores); printf("\n"); }
 
             // Convert scores from fp32 to fp16/bf16
@@ -884,7 +884,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
             warpgroup_wait<1>();
             // Reshape tSrS from ((2, 2, V), MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, V, MMA_N))
             Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
-            flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+            flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
             // if (cute::thread0()) { print_tensor(scores); printf("\n"); }
             // Convert scores from fp32 to fp16/bf16
             Tensor rP = flash::convert_type<Element>(tSrS);
@@ -1059,7 +1059,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
             // Reshape tSrS from ((2, 2, V), MMA_N, MMA_M) to (nrow=(2, V, MMA_M), ncol=(2, MMA_N))
             Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_transposed_rowcol(tSrS.layout()));
             // if (cute::thread0()) { print_tensor(lse); printf("\n"); }
-            flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+            flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
             // if (cute::thread0()) { print_tensor(scores); printf("\n"); }
 
             // Convert scores from fp32 to fp16/bf16
@@ -1663,7 +1663,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
                 warpgroup_wait<1>();
                 // Reshape tSrS from ((2, 2, V), MMA_N, MMA_M) to (nrow=(2, V, MMA_M), ncol=(2, MMA_N))
                 Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_transposed_rowcol(tSrS.layout()));
-                flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+                flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
                 // #pragma unroll
                 // for (int mi = 0; mi < size<0>(lse); ++mi) { lse(mi) *= float(M_LOG2E); }
                 // #pragma unroll
@@ -1864,7 +1864,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
                 warpgroup_wait<1>();
                 // Reshape tSrS from ((2, 2, V), MMA_N, MMA_M) to (nrow=(2, V, MMA_M), ncol=(2, MMA_N))
                 Tensor scores = make_tensor(tSrS.data(), flash::convert_layout_acc_rowcol(tSrS.layout()));
-                flash::scale_apply_exp2</*Scale=*/true, /*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+                flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
                 // if (blockIdx.x == 0 && blockIdx.z == 0 && threadIdx.x == 128) { print_tensor(scores); printf("\n"); }
 
                 // Convert scores from fp32 to fp16/bf16

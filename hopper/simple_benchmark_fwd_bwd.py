@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from datetime import datetime
 from functools import partial
 from einops import rearrange, repeat
-from flash_attn_interface import flash_attn_func
+from flash_attn_interface import _flash_attn_forward, _flash_attn_backward
 
 def construct_local_mask(
     seqlen_q,
@@ -155,60 +155,103 @@ def perf(warm_up, itr, func):
 
 
 def mfu_us(b, s, h, d, is_bwd, is_causal, cost):
+    bwd_computation_scale = 2.5
     computation = s*s*d*b*h
     computation = 2 * computation if is_causal else 4 * computation
     
     sol=computation/989/1000/1000
 
-    final_flops = computation / (cost*1000*1000) if not is_bwd else 2*computation / (cost*1000*1000)
-    final_sol = sol/cost if not is_bwd else 2*sol/cost
+    final_flops = computation / (cost*1000*1000) if not is_bwd else bwd_computation_scale*computation / (cost*1000*1000)
+    final_sol = sol/cost if not is_bwd else bwd_computation_scale*sol/cost
     
     return final_sol,final_flops
 
 
-def test_helper(b, s, h, d, causal = False, device="cuda", dtype=torch.float16):
+def test_helper(b, s, h, d, causal = False, check_diff = True, device="cuda", dtype=torch.float16):
     q = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
     k = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
     v = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
 
-    q1 = q.clone().detach()
-    k1 = k.clone().detach()
-    v1 = v.clone().detach()
-    q1.requires_grad_()
-    q1.retain_grad()
-    k1.requires_grad_()
-    k1.retain_grad()
-    v1.requires_grad_()
-    v1.retain_grad()
+    q1 = q.clone().detach().reshape(b*s, h, d)
+    k1 = k.clone().detach().reshape(b*s, h, d)
+    v1 = v.clone().detach().reshape(b*s, h, d)
 
+    rand_seqlen_q = torch.zeros([b]).int()
+    rand_seqlen_k = torch.zeros([b]).int()
+    rand_seqlen_q[:] = s
+    rand_seqlen_k[:] = s
+    cu_seqlens_q = F.pad(torch.cumsum(rand_seqlen_q, dim = 0, dtype=torch.int32), (1, 0)).cuda()
+    cu_seqlens_k = F.pad(torch.cumsum(rand_seqlen_k, dim = 0, dtype=torch.int32), (1, 0)).cuda()
     
-    func = partial(flash_attn_func, q1, k1, v1, causal=causal)
-    out, lse = func()
+    softmax_scale = (q1.shape[-1]) ** (-0.5)
+    f3_fwd_func = partial(_flash_attn_forward,
+        q1,#q,
+        k1,#k,
+        v1,#v,
+        None, #k_new,
+        None, #v_new,
+        None, #qv,
+        None, #out,
+        cu_seqlens_q, #cu_seqlens_q,
+        cu_seqlens_k, #cu_seqlens_k,
+        None, #cu_seqlens_k_new,
+        None, #seqused_q,
+        None, #seqused_k,
+        s, #max_seqlen_q,
+        s, #max_seqlen_k,
+        None, #page_table,
+        None, #kv_batch_idx,
+        None, #leftpad_k,
+        None, #rotary_cos,
+        None, #rotary_sin,
+        None, #q_descale,
+        None, #k_descale,
+        None, #v_descale,
+        softmax_scale,
+        causal)
+    out, lse, *rest = f3_fwd_func()
+    fwd_cost = perf(10, 10, f3_fwd_func)
+
     grad_out = torch.randn_like(out)
+    dq, dk, dv = torch.empty_like(q1), torch.empty_like(k1), torch.empty_like(v1)
+    fa3_bwd_func = partial(_flash_attn_backward,
+        grad_out, #dout
+        q1, #q,
+        k1, #k,
+        v1, #v,
+        out,
+        lse,
+        cu_seqlens_q, #cu_seqlens_q,
+        cu_seqlens_k, #cu_seqlens_k,
+        None, #sequed_q,
+        None, #sequed_k,
+        s, #max_seqlen_q,
+        s, #max_seqlen_k,
+        dq,
+        dk,
+        dv,
+        softmax_scale,
+        causal,
+        deterministic=False)
+    bwd_cost = perf(10, 10, fa3_bwd_func)
 
-    # ref
-    ref_out = attention_ref(q, k, v, causal = causal)[0]
     
-    fwd_cost = perf(10, 10, func)
-    
-    bwd_func = partial(out.backward, grad_out, retain_graph = True)
-    bwd_cost = perf(10, 10, bwd_func)
-
-    ref_out.backward(grad_out, retain_graph = True)
-
     fwd_mfu, fwd_flops = mfu_us(b, s, h, d, False, causal, fwd_cost * 1000)
     bwd_mfu, bwd_flops = mfu_us(b, s, h, d, True, causal, bwd_cost * 1000)
 
-
-    get_diff("fwd ", ref_out, out)
-    get_diff("dq ", q.grad, q1.grad)
-    get_diff("dk ", k.grad, k1.grad)
-    get_diff("dv ", v.grad, v1.grad)
+    if check_diff:
+        # ref
+        ref_out = attention_ref(q, k, v, causal = causal)[0]
+        ref_out.backward(grad_out, retain_graph = True)        
+        get_diff("fwd ", ref_out, out)
+        get_diff("dq ", q.grad, dq)
+        get_diff("dk ", k.grad, dk)
+        get_diff("dv ", v.grad, dv)
     
+    print("(bshd)=(%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
 
-    print("(bshd)=(%d,%d,%d,%d) causal=%d, fwd (l|m|f) = (%.3f ms, %.2f, %.1f), bwd (l|m|f)= (%.3f ms, %.2f, %.1f)" % (b, s, h, d, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
-
-test_helper(1, 8192, 8, 128, True)
+for bsz, seq in zip([8, 4, 1, 1, 1], [8*1024, 16*1024, 32*1024, 64*1024, 128*1024]):
+    test_helper(bsz, seq, 8, 128, causal=True, check_diff=False)
     
     
     

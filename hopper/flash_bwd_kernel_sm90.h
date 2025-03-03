@@ -35,6 +35,7 @@ public:
     // Mainloop derived types
     using CollectiveMainloop = CollectiveMainloop_;
     using TileShape_MNK = typename CollectiveMainloop::TileShape_MNK;
+    using TileShapePV_MNK = typename CollectiveMainloop::TileShapePV_MNK;
     using TiledMmaSdP = typename CollectiveMainloop::TiledMmaSdP;
     using TiledMmadKV = typename CollectiveMainloop::TiledMmadKV;
     using ArchTag = typename CollectiveMainloop::ArchTag;
@@ -260,7 +261,7 @@ public:
 
                 // dK and dV output accumulator.
                 Tensor tdKrdK = partition_fragment_C(tiled_mma_dKV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB? 2 : 1>(TileShape_MNK{}));
-                Tensor tdVrdV = partition_fragment_C(tiled_mma_dKV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB? 2 : 1>(TileShape_MNK{}));
+                Tensor tdVrdV = partition_fragment_C(tiled_mma_dKV, select<!dKV_swapAB ? 1 : 2, !dKV_swapAB? 2 : 1>(TileShapePV_MNK{}));
                 bool tile_valid = mainloop.mma(
                     params.mainloop, pipeline_q, pipeline_do, smem_pipe_read, smem_pipe_read_do,
                     tdKrdK, tdVrdV, threadIdx.x - NumCopyThreads, work_idx, block_coord, shared_storage);

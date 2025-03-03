@@ -109,8 +109,10 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
         {seqlen_k, params.d, params.h_k, batch_k},  // shape_K
         {params.k_row_stride, _1{}, params.k_head_stride, !is_varlen_k ? params.k_batch_stride : 0},  // stride_K
         static_cast<Element const*>(params.v_ptr),
+        {seqlen_k, params.dv, params.h_k, batch_k}, //shape_V
         {params.v_row_stride, _1{}, params.v_head_stride, !is_varlen_k ? params.v_batch_stride : 0},  // stride_V
         static_cast<Element const*>(params.do_ptr),
+        {seqlen_q, params.dv, params.h, batch_q}, // shape_O
         {params.do_row_stride, _1{}, params.do_head_stride, !is_varlen_q ? params.do_batch_stride : 0},  // stride_dO
         static_cast<ElementAccum*>(params.dq_accum_ptr),
         {seqlen_q_rounded * params.d_rounded, params.h, batch_q},  // shape_dQaccum

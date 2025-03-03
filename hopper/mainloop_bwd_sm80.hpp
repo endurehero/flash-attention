@@ -284,8 +284,10 @@ struct CollectiveMainloopBwdSm80 {
         ShapeQKV const shape_K;
         StrideQKV const stride_K;
         Element const* const ptr_V;
+        ShapeQKV const shape_V;
         StrideQKV const stride_V;
         Element const* const ptr_dO;
+        ShapeQKV const shape_dO;
         StrideQKV const stride_dO;
         ElementAccum* const ptr_dQaccum;
         ShapedQaccum const shape_dQaccum;
@@ -315,8 +317,10 @@ struct CollectiveMainloopBwdSm80 {
         ShapeQKV const shape_K;
         StrideQKV const stride_K;
         Element const* const ptr_V;
+        ShapeQKV const shape_V;
         StrideQKV const stride_V;
         Element const* const ptr_dO;
+        ShapeQKV const shape_dO;
         StrideQKV const stride_dO;
         ElementAccum* const ptr_dQaccum;
         ShapedQaccum const shape_dQaccum;
@@ -352,8 +356,8 @@ struct CollectiveMainloopBwdSm80 {
         // (the original softmax_scale) at the end.
         return {args.ptr_Q, args.shape_Q, args.stride_Q,
                 args.ptr_K, args.shape_K, args.stride_K,
-                args.ptr_V, args.stride_V,
-                args.ptr_dO, args.stride_dO,
+                args.ptr_V, args.shape_V, args.stride_V,
+                args.ptr_dO, args.shape_dO, args.stride_dO,
                 args.ptr_dQaccum, args.shape_dQaccum, args.stride_dQaccum,
                 cutlass::FastDivmod(cute::ceil_div(get<2>(args.shape_Q), get<2>(args.shape_K))),
                 args.ptr_LSE_log2, args.shape_LSE, args.stride_LSE_log2, args.ptr_dPsum, args.stride_dPsum,

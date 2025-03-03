@@ -154,10 +154,10 @@ def perf(warm_up, itr, func):
     return cost
 
 
-def mfu_us(b, s, h, d, is_bwd, is_causal, cost):
+def mfu_us(b, s, h, d, d_v, is_bwd, is_causal, cost):
     bwd_computation_scale = 2.5
-    computation = s*s*d*b*h
-    computation = 2 * computation if is_causal else 4 * computation
+    computation = s*s*d*b*h + s*s*d_v*b*h
+    computation = computation if is_causal else 2 * computation
     
     sol=computation/989/1000/1000
 
@@ -167,14 +167,14 @@ def mfu_us(b, s, h, d, is_bwd, is_causal, cost):
     return final_sol,final_flops
 
 
-def test_helper(b, s, h, d, causal = False, check_diff = True, device="cuda", dtype=torch.bfloat16):
+def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda", dtype=torch.bfloat16):
     q = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
     k = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
-    v = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
+    v = torch.randn(b, s, h, d_v, device=device, dtype=dtype, requires_grad=True)
 
     q1 = q.clone().detach().reshape(b*s, h, d)
     k1 = k.clone().detach().reshape(b*s, h, d)
-    v1 = v.clone().detach().reshape(b*s, h, d)
+    v1 = v.clone().detach().reshape(b*s, h, d_v)
 
     rand_seqlen_q = torch.zeros([b]).int()
     rand_seqlen_k = torch.zeros([b]).int()
@@ -236,8 +236,8 @@ def test_helper(b, s, h, d, causal = False, check_diff = True, device="cuda", dt
     bwd_cost = perf(10, 10, fa3_bwd_func)
 
     
-    fwd_mfu, fwd_flops = mfu_us(b, s, h, d, False, causal, fwd_cost * 1000)
-    bwd_mfu, bwd_flops = mfu_us(b, s, h, d, True, causal, bwd_cost * 1000)
+    fwd_mfu, fwd_flops = mfu_us(b, s, h, d, d_v, False, causal, fwd_cost * 1000)
+    bwd_mfu, bwd_flops = mfu_us(b, s, h, d, d_v, True, causal, bwd_cost * 1000)
 
     if check_diff:
         # ref
@@ -251,8 +251,9 @@ def test_helper(b, s, h, d, causal = False, check_diff = True, device="cuda", dt
     print("(bshd)=(%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
 
 head_dim = 192
+head_dimv = 128
 for bsz, seq in zip([8, 4, 1, 1, 1], [8*1024, 16*1024, 32*1024, 64*1024, 128*1024]):
-    test_helper(bsz, seq, 8, head_dim, causal=True, check_diff=False)
+    test_helper(bsz, seq, 8, head_dim, head_dimv, causal=True, check_diff=False)
     
     
     

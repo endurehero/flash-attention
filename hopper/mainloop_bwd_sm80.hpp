@@ -21,7 +21,7 @@ namespace flash {
 
 using namespace cute;
 
-template <int Stages, int Stages_dO, class TileShape_MNK_, class Element_, class ElementAccum_, class ArchTag_,
+template <int Stages, int Stages_dO, class TileShape_MNK_, class TileShapePV_MNK_, class Element_, class ElementAccum_, class ArchTag_,
         bool Is_causal_, bool Is_local_, bool Has_softcap_, bool Varlen_, bool Deterministic,
         bool SdP_swapAB_, bool dKV_swapAB_, bool dQ_swapAB_,
         int NumMmaWarpGroups=2, int AtomLayoutMSdP=1, int AtomLayoutNdKV=8, int AtomLayoutMdQ=1,

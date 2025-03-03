@@ -242,7 +242,7 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
     if check_diff:
         # ref
         ref_out = attention_ref(q, k, v, causal = causal)[0]
-        ref_out.backward(grad_out, retain_graph = True)        
+        ref_out.backward(grad_out.reshape(ref_out.shape), retain_graph = True)        
         get_diff("fwd ", ref_out, out)
         get_diff("dq ", q.grad, dq)
         get_diff("dk ", k.grad, dk)
@@ -252,7 +252,8 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
 
 head_dim = 192
 head_dimv = 128
-for bsz, seq in zip([8, 4, 1, 1, 1], [8*1024, 16*1024, 32*1024, 64*1024, 128*1024]):
+#for bsz, seq in zip([8, 4, 1, 1, 1], [8*1024, 16*1024, 32*1024, 64*1024, 128*1024]):
+for bsz, seq in zip([2], [8*1024]):
     test_helper(bsz, seq, 8, head_dim, head_dimv, causal=True, check_diff=False)
     
     

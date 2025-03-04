@@ -81,7 +81,7 @@ struct CollectiveMainloopBwdSm90 {
     // static constexpr GMMA::Major PdS_Major = GMMA::Major::MN;
     static constexpr GMMA::Major PdSt_Major = PdS_Major == GMMA::Major::K ? GMMA::Major::MN : GMMA::Major::K;
 
-    using TileShapeAtomSdP = std::conditional_t<
+    using TileShapeAtomS = std::conditional_t<
         !SdP_swapAB,
         Shape<Int<kBlockM>, Int<kBlockN / (NumMmaWarpGroups / AtomLayoutMSdP)>, Int<kHeadDim>>,
         Shape<Int<kBlockN>, Int<kBlockM / AtomLayoutMSdP>, Int<kHeadDim>>
@@ -91,29 +91,53 @@ struct CollectiveMainloopBwdSm90 {
         Layout<Shape<Int<AtomLayoutMSdP>, Int<NumMmaWarpGroups / AtomLayoutMSdP>, _1>>,
         Layout<Shape<Int<NumMmaWarpGroups / AtomLayoutMSdP>, Int<AtomLayoutMSdP>, _1>>
     >;
-    using TiledMmaSdP = decltype(cute::make_tiled_mma(
-        cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomSdP>(),
+    using TiledMmaS = decltype(cute::make_tiled_mma(
+        cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomS>(),
+        AtomLayoutSdP{}));
+
+    using TileShapeAtomdP = std::conditional_t<
+        !SdP_swapAB,
+        Shape<Int<kBlockM>, Int<kBlockN / (NumMmaWarpGroups / AtomLayoutMSdP)>, Int<kHeadDimV>>,
+        Shape<Int<kBlockN>, Int<kBlockM / AtomLayoutMSdP>, Int<kHeadDimV>>
+    >;
+
+    using TiledMmadP = decltype(cute::make_tiled_mma(
+        cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomdP>(),
         AtomLayoutSdP{}));
 
     using TiledMmadPRS = decltype(cute::make_tiled_mma(
-        cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapeAtomSdP>(),
+        cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapeAtomdP>(),
         AtomLayoutSdP{}));
 
-    using TileShapeAtomdKV = std::conditional_t<
+    using TileShapeAtomdK = std::conditional_t<
         !dKV_swapAB,
         Shape<Int<kBlockN>, Int<kHeadDim / (NumMmaWarpGroups / AtomLayoutNdKV)>, Int<kBlockM>>,
         Shape<Int<kHeadDim>, Int<kBlockN / AtomLayoutNdKV>, Int<kBlockM>>
+    >;
+
+    using TileShapeAtomdV = std::conditional_t<
+        !dKV_swapAB,
+        Shape<Int<kBlockN>, Int<kHeadDimV / (NumMmaWarpGroups / AtomLayoutNdKV)>, Int<kBlockM>>,
+        Shape<Int<kHeadDimV>, Int<kBlockN / AtomLayoutNdKV>, Int<kBlockM>>
     >;
     using AtomLayoutdKV = std::conditional_t<
         !dKV_swapAB,
         Layout<Shape<Int<AtomLayoutNdKV>, Int<NumMmaWarpGroups / AtomLayoutNdKV>, _1>>,
         Layout<Shape<Int<NumMmaWarpGroups / AtomLayoutNdKV>, Int<AtomLayoutNdKV>, _1>>
     >;
-    using TiledMmadKV = decltype(cute::make_tiled_mma(
+    using TiledMmadK = decltype(cute::make_tiled_mma(
         std::conditional_t<
             Mma_dKV_is_RS,
-            decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapeAtomdKV, GMMA::Major::K, GMMA::Major::MN>()),
-            decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomdKV, !dKV_swapAB ? PdSt_Major : GMMA::Major::MN, !dKV_swapAB ? GMMA::Major::MN : PdSt_Major>())
+            decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapeAtomdK, GMMA::Major::K, GMMA::Major::MN>()),
+            decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomdK, !dKV_swapAB ? PdSt_Major : GMMA::Major::MN, !dKV_swapAB ? GMMA::Major::MN : PdSt_Major>())
+        >{},
+        AtomLayoutdKV{}));
+
+    using TiledMmadV = decltype(cute::make_tiled_mma(
+        std::conditional_t<
+            Mma_dKV_is_RS,
+            decltype(cute::GMMA::rs_op_selector<Element, Element, ElementAccum, TileShapeAtomdV, GMMA::Major::K, GMMA::Major::MN>()),
+            decltype(cute::GMMA::ss_op_selector<Element, Element, ElementAccum, TileShapeAtomdV, !dKV_swapAB ? PdSt_Major : GMMA::Major::MN, !dKV_swapAB ? GMMA::Major::MN : PdSt_Major>())
         >{},
         AtomLayoutdKV{}));
 
@@ -725,10 +749,10 @@ struct CollectiveMainloopBwdSm90 {
         Tensor sLSEMma = make_tensor(make_smem_ptr(shared_storage.tensors.mainloop.smem_lse.data()), SmemLayoutLSEMma{});
         Tensor sdPsumMma = make_tensor(make_smem_ptr(shared_storage.tensors.mainloop.smem_dpsum.data()), SmemLayoutLSEMma{});
 
-        static_assert(stride<0>(typename TiledMmaSdP::ALayout{}) == 0 and
-                      stride<0>(typename TiledMmaSdP::BLayout{}) == 0 and
-                      size<0>(typename TiledMmaSdP::ALayout{}) == cutlass::NumThreadsPerWarpGroup and
-                      size<0>(typename TiledMmaSdP::BLayout{}) == cutlass::NumThreadsPerWarpGroup,
+        static_assert(stride<0>(typename TiledMmaS::ALayout{}) == 0 and
+                      stride<0>(typename TiledMmaS::BLayout{}) == 0 and
+                      size<0>(typename TiledMmaS::ALayout{}) == cutlass::NumThreadsPerWarpGroup and
+                      size<0>(typename TiledMmaS::BLayout{}) == cutlass::NumThreadsPerWarpGroup,
                       "Stride of the first mode must be 0 and the size of the mode must be NumThreadsPerWarpGroup");
         constexpr int MmaWarpGroups = NumMmaThreads / cutlass::NumThreadsPerWarpGroup;
         Layout warp_group_thread_layout = make_layout(make_shape(Int<MmaWarpGroups>{}),
@@ -737,19 +761,22 @@ struct CollectiveMainloopBwdSm90 {
                                                       make_stride(Int<cutlass::NumThreadsPerWarpGroup>{}));
 
         int warp_group_idx = __shfl_sync(0xFFFFFFFF, thread_idx / cutlass::NumThreadsPerWarpGroup, 0);
-        TiledMmaSdP tiled_mma_SdP;
-        using TiledMmadP = std::conditional_t<!Mma_dP_is_RS, TiledMmaSdP, TiledMmadPRS>;
+        TiledMmaS tiled_mma_S;
+        using TiledMmadP = std::conditional_t<!Mma_dP_is_RS, TiledMmadP, TiledMmadPRS>;
         TiledMmadP tiled_mma_dP;
-        TiledMmadKV tiled_mma_dKV;
+        TiledMmadK tiled_mma_dK;
+        TiledMmadV tiled_mma_dV;
         TiledMmadQ tiled_mma_dQ;
 
-        auto wg_mma_SdP = tiled_mma_SdP.get_slice(warp_group_thread_layout(warp_group_idx));
+        auto wg_mma_S = tiled_mma_S.get_slice(warp_group_thread_layout(warp_group_idx));
         auto wg_mma_dP = tiled_mma_dP.get_slice(warp_group_thread_layout(warp_group_idx));
-        auto thread_mma_SdP = tiled_mma_SdP.get_thread_slice(thread_idx);
-        auto wg_mma_dKV = tiled_mma_dKV.get_slice(warp_group_thread_layout(warp_group_idx));
+        auto thread_mma_S = tiled_mma_S.get_thread_slice(thread_idx);
+        auto thread_mma_dP = tiled_mma_dP.get_thread_slice(thread_idx);
+        auto wg_mma_dK = tiled_mma_dK.get_slice(warp_group_thread_layout(warp_group_idx));
+        auto wg_mma_dV = tiled_mma_dV.get_slice(warp_group_thread_layout(warp_group_idx));
         auto wg_mma_dQ = tiled_mma_dQ.get_slice(warp_group_thread_layout_dq(warp_group_idx));
 
-        auto smem_tiled_copy_PdS = make_tiled_copy_C(SmemCopyAtomPdS{}, tiled_mma_SdP);
+        auto smem_tiled_copy_PdS = make_tiled_copy_C(SmemCopyAtomPdS{}, tiled_mma_S);
         auto smem_thr_copy_PdS = smem_tiled_copy_PdS.get_thread_slice(thread_idx);
 
         R2STiledCopydQaccum r2s_tiled_copy_dQaccum;
@@ -761,12 +788,12 @@ struct CollectiveMainloopBwdSm90 {
         // We have to use the templated mma_partition_fragment_AB instead of cute::conditional_return or lambda,
         // because some partition_fragment_A/B don't compile.
         // https://stackoverflow.com/questions/50051473/if-constexpr-in-c17-does-not-work-in-a-non-templated-function
-        Tensor tSrQ = mma_partition_fragment_AB</*A=*/!SdP_swapAB>(wg_mma_SdP, sQ);
-        Tensor tSrK = mma_partition_fragment_AB</*A=*/SdP_swapAB>(wg_mma_SdP, sK);
-        Tensor tdPrdO = mma_partition_fragment_AB</*A=*/!SdP_swapAB>(wg_mma_SdP, sdO);
+        Tensor tSrQ = mma_partition_fragment_AB</*A=*/!SdP_swapAB>(wg_mma_S, sQ);
+        Tensor tSrK = mma_partition_fragment_AB</*A=*/SdP_swapAB>(wg_mma_S, sK);
+        Tensor tdPrdO = mma_partition_fragment_AB</*A=*/!SdP_swapAB>(wg_mma_dP, sdO);
         Tensor tdPrV = mma_partition_fragment_AB</*A=*/SdP_swapAB>(wg_mma_dP, sV);
-        Tensor tdVrdO = mma_partition_fragment_AB</*A=*/dKV_swapAB>(wg_mma_dKV, sdOt);
-        Tensor tdKrQ = mma_partition_fragment_AB</*A=*/dKV_swapAB>(wg_mma_dKV, sQt);
+        Tensor tdVrdO = mma_partition_fragment_AB</*A=*/dKV_swapAB>(wg_mma_dV, sdOt);
+        Tensor tdKrQ = mma_partition_fragment_AB</*A=*/dKV_swapAB>(wg_mma_dK, sQt);
         Tensor tdQrdS = mma_partition_fragment_AB</*A=*/!dQ_swapAB>(wg_mma_dQ, sdS);
         Tensor tdQrK = mma_partition_fragment_AB</*A=*/dQ_swapAB>(wg_mma_dQ, sKt);
 
@@ -777,11 +804,11 @@ struct CollectiveMainloopBwdSm90 {
         // thread_mma_SdP.partition_C(sLSEMma) has shape ((2, 2, V), MMA_M, MMA_N, PIPE), we only take the col indices
         // or row indices, depending on whether SdP_swapAB.
         Tensor tLSEsLSE = cute::conditional_return<!SdP_swapAB>(
-            group_modes<0, 2>(thread_mma_SdP.partition_C(sLSEMma)(make_coord(_0{}, _, _0{}), _, _0{}, _)),  // (2, MMA_M, PIPE)
-            group_modes<0, 3>(thread_mma_SdP.partition_C(sLSEMma)(make_coord(_, _0{}, _), _0{}, _, _)));  // (2, V, MMA_N, PIPE)
+            group_modes<0, 2>(thread_mma_S.partition_C(sLSEMma)(make_coord(_0{}, _, _0{}), _, _0{}, _)),  // (2, MMA_M, PIPE)
+            group_modes<0, 3>(thread_mma_S.partition_C(sLSEMma)(make_coord(_, _0{}, _), _0{}, _, _)));  // (2, V, MMA_N, PIPE)
         Tensor tLSEsdPsum = cute::conditional_return<!SdP_swapAB>(
-            group_modes<0, 2>(thread_mma_SdP.partition_C(sdPsumMma)(make_coord(_0{}, _, _0{}), _, _0{}, _)),
-            group_modes<0, 3>(thread_mma_SdP.partition_C(sdPsumMma)(make_coord(_, _0{}, _), _0{}, _, _)));
+            group_modes<0, 2>(thread_mma_dP.partition_C(sdPsumMma)(make_coord(_0{}, _, _0{}), _, _0{}, _)),
+            group_modes<0, 3>(thread_mma_dP.partition_C(sdPsumMma)(make_coord(_, _0{}, _), _0{}, _, _)));
         // if (blockIdx.x == 0 && threadIdx.x == 128) { print(sLSEMma); printf("\n"); print(tLSEsLSE); printf("\n"); }
         // If we want to split the stats among the 8 threads that share the same rows.
         static constexpr int kStatsPerThread = cute::ceil_div(decltype(size(tLSEsLSE))::value, 8);
@@ -805,7 +832,7 @@ struct CollectiveMainloopBwdSm90 {
         Tensor tdQgdQaccum = r2s_thr_copy_dQaccum.partition_D(gdQaccum);
         // if (blockIdx.x == 0 && threadIdx.x == 128) { print(mdQaccum); printf("\n"); print(gdQaccum_); printf("\n"); print(gdQaccum); printf("\n"); print(tdQgdQaccum); printf("\n"); }
 
-        flash::Mask<kBlockM, kBlockN, false /*PackGQA*/, TiledMmaSdP, SdP_swapAB> mask(
+        flash::Mask<kBlockM, kBlockN, false /*PackGQA*/, TiledMmaS, SdP_swapAB> mask(
             thread_idx, seqlen_q, seqlen_k, params.window_size_left, params.window_size_right, 0 /*sink_token_length*/,
             params.qhead_per_khead_divmod
         );
@@ -814,7 +841,8 @@ struct CollectiveMainloopBwdSm90 {
 
         clear(tdKrdK);
         clear(tdVrdV);
-        // tiled_mma_dKV.accumulate_ = GMMA::ScaleOut::Zero;
+        // tiled_mma_dK.accumulate_ = GMMA::ScaleOut::Zero;
+        // tiled_mma_dV.accumulate_ = GMMA::ScaleOut::Zero;
 
         cutlass::ConsumerToken barrier_token = static_cast<cutlass::BarrierStatus>(shared_storage.pipelines.barrier_KV.try_wait(work_idx % 2));
         if (barrier_token == cutlass::BarrierStatus::WaitAgain) { shared_storage.pipelines.barrier_KV.wait(work_idx % 2); }
@@ -829,9 +857,9 @@ struct CollectiveMainloopBwdSm90 {
         }
 
         auto bwd_step = [&](int m_block, auto mask_fn) {
-            Tensor tSrS = partition_fragment_C(tiled_mma_SdP, select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
+            Tensor tSrS = partition_fragment_C(tiled_mma_S, select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
             consumer_wait(pipeline_q, smem_pipe_read);
-            flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB=*/SdP_swapAB>(tiled_mma_SdP, tSrQ(_, _, _, smem_pipe_read.index()), tSrK, tSrS);
+            flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB=*/SdP_swapAB>(tiled_mma_S, tSrQ(_, _, _, smem_pipe_read.index()), tSrK, tSrS);
             Tensor tLSErLSE = cute::conditional_return<!ShuffleLSE>(make_fragment_like(tLSEsLSE(_, _0{})), make_tensor<ElementAccum>(Int<kStatsPerThread>{}));
             if constexpr (!ShuffleLSE) {
                 cute::copy(tLSEsLSE(_, smem_pipe_read.index()), tLSErLSE);
@@ -842,7 +870,7 @@ struct CollectiveMainloopBwdSm90 {
                     tLSErLSE(i) = tLSEsLSE((thread_idx % 32) / 4 + i * 8, smem_pipe_read.index());
                 }
             }
-            Tensor tdPrdP = partition_fragment_C(tiled_mma_SdP, select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
+            Tensor tdPrdP = partition_fragment_C(tiled_mma_dP, select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShapePV_MNK{}));
             PipelineState_dO smem_pipe_read_do_cur = cute::conditional_return<Q_dO_same_stages>(smem_pipe_read, smem_pipe_read_do);
             consumer_wait(pipeline_do, smem_pipe_read_do_cur);
             flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB=*/SdP_swapAB>(tiled_mma_dP, tdPrdO(_, _, _, smem_pipe_read_do_cur.index()), tdPrV, tdPrdP);
@@ -922,12 +950,12 @@ struct CollectiveMainloopBwdSm90 {
             if constexpr (!Slice_dQKV_Mma) {
                 // Most cases take this path, except for hdim256 where we want to slice to reduce register pressure
                 if constexpr (Mma_dKV_is_RS) {
-                    Tensor tdVrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMmadKV>(tSrS.layout()));
-                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_dKV, tdVrP, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
+                    Tensor tdVrP = make_tensor(rP.data(), convert_layout_acc_Aregs<TiledMmadV>(tSrS.layout()));
+                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1>(tiled_mma_dV, tdVrP, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
                 } else {
-                    Tensor tdVrP = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dKV, sPt);
+                    Tensor tdVrP = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dV, sPt);
                     Tensor tdVrP_cur = tdVrP(_, _, _, cute::conditional_return<kStages_dS==1>(_0{}, smem_pipe_read.index()));
-                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB>(tiled_mma_dKV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
+                    flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB>(tiled_mma_dV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
                 }
                 // SMEM fence to make sure sdS is written before it's read by WGMMA
                 cutlass::arch::fence_view_async_shared();
@@ -938,12 +966,12 @@ struct CollectiveMainloopBwdSm90 {
                 pipeline_do.consumer_release(smem_pipe_read_do_cur);  // release dQ
 
                 if constexpr (Mma_dKV_is_RS) {
-                    Tensor tdKrdS = make_tensor(rdS.data(), convert_layout_acc_Aregs<TiledMmadKV>(tdPrdP.layout()));
-                    flash::gemm</*zero_init=*/false, /*wg_wait=*/1>(tiled_mma_dKV, tdKrdS, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
+                    Tensor tdKrdS = make_tensor(rdS.data(), convert_layout_acc_Aregs<TiledMmadK>(tdPrdP.layout()));
+                    flash::gemm</*zero_init=*/false, /*wg_wait=*/1>(tiled_mma_dK, tdKrdS, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
                 } else {
-                    Tensor tdKrdS = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dKV, sdSt);
+                    Tensor tdKrdS = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dK, sdSt);
                     Tensor tdKrdS_cur = tdKrdS(_, _, _, cute::conditional_return<kStages_dS==1>(_0{}, smem_pipe_read.index()));
-                    flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB>(tiled_mma_dKV, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
+                    flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB>(tiled_mma_dK, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
                 }
                 if constexpr (dQacc_use_TMA) {
                     int const warp_group_idx = flash::canonical_warp_group_idx_nosync() - 1;
@@ -964,31 +992,31 @@ struct CollectiveMainloopBwdSm90 {
             } else {  // Slice_dQKV_Mma
 
                 static_assert(!(Slice_dQKV_Mma && Mma_dKV_is_RS));
-                Tensor tdVrP = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dKV, sPt);
+                Tensor tdVrP = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dV, sPt);
                 Tensor tdVrP_cur = tdVrP(_, _, _, cute::conditional_return<kStages_dS==1>(_0{}, smem_pipe_read.index()));
-                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/0>(tiled_mma_dKV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
+                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/0>(tiled_mma_dV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
 
                 cutlass::arch::fence_view_async_shared();
                 cutlass::arch::NamedBarrier::sync(NumMmaThreads, static_cast<uint32_t>(BwdNamedBarriers::PdS) /*id*/);
                 Tensor tdQrdQ = partition_fragment_C(tiled_mma_dQ, select<!dQ_swapAB ? 0 : 2, !dQ_swapAB ? 2 : 0>(TileShape_MNK{}));
                 Tensor tdQrdS_cur = tdQrdS(_, _, _, cute::conditional_return<kStages_dS==1>(_0{}, smem_pipe_read.index()));
                 flash::gemm</*zero_init=*/true, /*wg_wait=*/-1, /*SwapAB=*/dQ_swapAB, /*M_slice=*/0>(tiled_mma_dQ, tdQrdS_cur, tdQrK, tdQrdQ);
-                flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/1>(tiled_mma_dKV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
+                flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/1>(tiled_mma_dV, tdVrP_cur, tdVrdO(_, _, _, smem_pipe_read_do_cur.index()), tdVrdV);
                 Tensor tdQrdQ_atomic = recast<float4>(r2s_thr_copy_dQaccum.retile_S(tdQrdQ));
                 Tensor tdQgdQaccum_atomic = recast<float4>(tdQgdQaccum(_, _, _, m_block));
                 #pragma unroll
                 for (int i = 0; i < size(tdQrdQ_atomic) / 2; ++i) { atomicAdd(&tdQgdQaccum_atomic(i), tdQrdQ_atomic(i)); }
 
-                Tensor tdKrdS = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dKV, sdSt);
+                Tensor tdKrdS = mma_partition_fragment_AB</*A=*/!dKV_swapAB>(wg_mma_dK, sdSt);
                 Tensor tdKrdS_cur = tdKrdS(_, _, _, cute::conditional_return<kStages_dS==1>(_0{}, smem_pipe_read.index()));
-                flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/0>(tiled_mma_dKV, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
+                flash::gemm</*zero_init=*/false, /*wg_wait=*/1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/0>(tiled_mma_dK, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
                 pipeline_do.consumer_release(smem_pipe_read_do_cur);  // release dO
 
                 flash::gemm</*zero_init=*/true, /*wg_wait=*/0, /*SwapAB=*/dQ_swapAB, /*M_slice=*/1>(tiled_mma_dQ, tdQrdS_cur, tdQrK, tdQrdQ);
                 #pragma unroll
                 for (int i = size(tdQrdQ_atomic) / 2;  i < size(tdQrdQ_atomic); ++i) { atomicAdd(&tdQgdQaccum_atomic(i), tdQrdQ_atomic(i)); }
 
-                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/1>(tiled_mma_dKV, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
+                flash::gemm</*zero_init=*/false, /*wg_wait=*/-1, /*SwapAB=*/dKV_swapAB, /*M_slice=*/1>(tiled_mma_dK, tdKrdS_cur, tdKrQ(_, _, _, smem_pipe_read.index()), tdKrdK);
             }
 
             warpgroup_wait<0>();

@@ -159,13 +159,14 @@ struct CollectiveEpilogueBwd {
         }
     }
 
-    template <typename SharedStorage, typename FrgTensorO, typename TiledMma>
+    template <typename SharedStorage, typename FrgTensorO, typename TiledMmaK, typename TiledMmaV>
     CUTLASS_DEVICE void
     store(Params const& params,
           FrgTensorO const& tdKrdK,
           FrgTensorO const& tdVrdV,
           SharedStorage& shared_storage,
-          TiledMma tiled_mma,
+          TiledMmaK tiled_mmak,
+          TiledMmaV tiled_mmav,
           int thread_idx,
           cute::tuple<int32_t, int32_t, int32_t> const& block_coord
           ) {
@@ -175,23 +176,25 @@ struct CollectiveEpilogueBwd {
         Tensor sdV = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdKV{}));
         Tensor sdKt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dk.data()), SmemLayoutdKVt{}));
         Tensor sdVt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdKVt{}));
-        auto smem_tiled_copy_dKV = make_tiled_copy_C(SmemCopyAtomdKV{}, tiled_mma);
-        auto smem_thr_copy_dKV = smem_tiled_copy_dKV.get_thread_slice(thread_idx);
+        auto smem_tiled_copy_dK = make_tiled_copy_C(SmemCopyAtomdKV{}, tiled_mmak);
+        auto smem_tiled_copy_dV = make_tiled_copy_C(SmemCopyAtomdKV{}, tiled_mmav);
+        auto smem_thr_copy_dK = smem_tiled_copy_dK.get_thread_slice(thread_idx);
+        auto smem_thr_copy_dV = smem_tiled_copy_dV.get_thread_slice(thread_idx);
 
         Tensor tdVrdV_out = make_tensor_like<Element>(tdVrdV);
         flash::convert_type_out(tdVrdV, tdVrdV_out);
         Tensor tdKrdK_out = make_tensor_like<Element>(tdKrdK);
         flash::convert_type_out(tdKrdK, tdKrdK_out);
-        Tensor taccdKrdK = smem_thr_copy_dKV.retile_S(tdKrdK_out);        // ((Atom,AtomNum), MMA_M, MMA_N)
-        Tensor taccdVrdV = smem_thr_copy_dKV.retile_S(tdVrdV_out);        // ((Atom,AtomNum), MMA_M, MMA_N)
+        Tensor taccdKrdK = smem_thr_copy_dK.retile_S(tdKrdK_out);        // ((Atom,AtomNum), MMA_M, MMA_N)
+        Tensor taccdVrdV = smem_thr_copy_dV.retile_S(tdVrdV_out);        // ((Atom,AtomNum), MMA_M, MMA_N)
         // if (blockIdx.x == 0 && threadIdx.x == 128) { print(smem_thr_copy_dKV); print(sdK); printf("\n"); print(sdKt); printf("\n"); }
-        Tensor taccdKsdK = smem_thr_copy_dKV.partition_D(cute::conditional_return<!dKV_swapAB>(sdK, sdKt));     // ((Atom,AtomNum),PIPE_M,PIPE_N)
-        Tensor taccdVsdV = smem_thr_copy_dKV.partition_D(cute::conditional_return<!dKV_swapAB>(sdV, sdVt));     // ((Atom,AtomNum),PIPE_M,PIPE_N)
+        Tensor taccdKsdK = smem_thr_copy_dK.partition_D(cute::conditional_return<!dKV_swapAB>(sdK, sdKt));     // ((Atom,AtomNum),PIPE_M,PIPE_N)
+        Tensor taccdVsdV = smem_thr_copy_dV.partition_D(cute::conditional_return<!dKV_swapAB>(sdV, sdVt));     // ((Atom,AtomNum),PIPE_M,PIPE_N)
 
         // Make sure all WGs have finished reading K and V
         flash::named_barrier_sync(NumEpilogueThreads, cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
-        cute::copy(smem_tiled_copy_dKV, taccdVrdV, taccdVsdV);
-        cute::copy(smem_tiled_copy_dKV, taccdKrdK, taccdKsdK);
+        cute::copy(smem_tiled_copy_dV, taccdVrdV, taccdVsdV);
+        cute::copy(smem_tiled_copy_dK, taccdKrdK, taccdKsdK);
         if constexpr (Use_TMA) {
             cutlass::arch::fence_view_async_shared(); // ensure smem writes are visible to TMA
             cutlass::arch::NamedBarrier::arrive(NumEpilogueThreads + cutlass::NumThreadsPerWarp,
@@ -400,13 +403,14 @@ struct CollectiveEpilogueBwdGQA {
     static void prefetch_tma_descriptors(Params const& params) {
     }
 
-    template <typename SharedStorage, typename FrgTensorO, typename TiledMma>
+    template <typename SharedStorage, typename FrgTensorO, typename TiledMmaK, typename TiledMmaV>
     CUTLASS_DEVICE void
     store(Params const& params,
           FrgTensorO const& tdKrdK,
           FrgTensorO const& tdVrdV,
           SharedStorage& shared_storage,
-          TiledMma tiled_mma,
+          TiledMmaK tiled_mmak,
+          TiledMmaV tiled_mmav,
           int thread_idx,
           cute::tuple<int32_t, int32_t, int32_t> const& block_coord
           ) {

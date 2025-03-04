@@ -249,7 +249,7 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
         using TileShape_NK = cute::Shape<Int<kBlockN>, Int<kHeadDim>>;
         using PostprocessKerneldKV = flash::FlashAttnBwdPostprocessConvertdQ<TileShape_NK, Element, ElementAccum, ArchTag,
             AttnKernel::CollectiveEpilogue::NumEpilogueThreads,
-            typename AttnKernel::CollectiveMainloop::TiledMmadKV,
+            typename AttnKernel::CollectiveMainloop::TiledMmadK,
             AttnKernel::CollectiveMainloop::dKV_swapAB
             >;
         typename PostprocessKerneldKV::Arguments postprocess_dK_args {

@@ -248,13 +248,13 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
         get_diff("dk ", k.grad, dk)
         get_diff("dv ", v.grad, dv)
     
-    print("(bshd)=(%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
+    print("(bshddv)=(%d,%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, d_v, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
 
 head_dim = 192
 head_dimv = 128
 #for bsz, seq in zip([8, 4, 1, 1, 1], [8*1024, 16*1024, 32*1024, 64*1024, 128*1024]):
-for bsz, seq in zip([2], [8*1024]):
-    test_helper(bsz, seq, 8, head_dim, head_dimv, causal=True, check_diff=True)
+for bsz, seq in zip([1], [16]):
+    test_helper(bsz, seq, 1, head_dim, head_dimv, causal=True, check_diff=True)
     
     
     

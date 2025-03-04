@@ -169,7 +169,7 @@ def mfu_us(b, s, h, d, d_v, is_bwd, is_causal, cost):
     return final_sol,final_flops
 
 
-def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda", dtype=torch.bfloat16):
+def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, bench = True, device="cuda", dtype=torch.bfloat16):
     q = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
     k = torch.randn(b, s, h, d, device=device, dtype=dtype, requires_grad=True)
     v = torch.randn(b, s, h, d_v, device=device, dtype=dtype, requires_grad=True)
@@ -186,7 +186,7 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
     cu_seqlens_k = F.pad(torch.cumsum(rand_seqlen_k, dim = 0, dtype=torch.int32), (1, 0)).cuda()
     
     softmax_scale = (q1.shape[-1]) ** (-0.5)
-    f3_fwd_func = partial(_flash_attn_forward,
+    fa3_fwd_func = partial(_flash_attn_forward,
         q1,#q,
         k1,#k,
         v1,#v,
@@ -211,8 +211,7 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
         None, #v_descale,
         softmax_scale,
         causal)
-    out, lse, *rest = f3_fwd_func()
-    fwd_cost = perf(10, 10, f3_fwd_func)
+    out, lse, *rest = fa3_fwd_func()
 
     grad_out = torch.randn_like(out)
     dq, dk, dv = torch.empty_like(q1), torch.empty_like(k1), torch.empty_like(v1)
@@ -235,12 +234,8 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
         softmax_scale,
         causal,
         deterministic=False)
-    bwd_cost = perf(10, 10, fa3_bwd_func)
 
-    
-    fwd_mfu, fwd_flops = mfu_us(b, s, h, d, d_v, False, causal, fwd_cost * 1000)
-    bwd_mfu, bwd_flops = mfu_us(b, s, h, d, d_v, True, causal, bwd_cost * 1000)
-
+    fa3_bwd_func()
     if check_diff:
         # ref
         ref_out = attention_ref(q, k, v, causal = causal)[0]
@@ -250,7 +245,13 @@ def test_helper(b, s, h, d, d_v, causal = False, check_diff = True, device="cuda
         get_diff("dk ", k.grad, dk)
         get_diff("dv ", v.grad, dv)
     
-    print("(bshddv)=(%d,%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, d_v, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
+    if bench:
+        fwd_cost = perf(10, 10, fa3_fwd_func)
+        bwd_cost = perf(10, 10, fa3_bwd_func)
+
+        fwd_mfu, fwd_flops = mfu_us(b, s, h, d, d_v, False, causal, fwd_cost * 1000)
+        bwd_mfu, bwd_flops = mfu_us(b, s, h, d, d_v, True, causal, bwd_cost * 1000)
+        print("(bshddv)=(%d,%d,%d,%d,%d) causal=%d, fwd = (lat=%.3f ms, sol=%.2f, tflops=%.1f), bwd = (lat=%.3f ms, sol%.2f, tflops=%.1f)" % (b, s, h, d, d_v, causal, fwd_cost,fwd_mfu, fwd_flops, bwd_cost,bwd_mfu, bwd_flops))
 
 head_dim = 192
 head_dimv = 128

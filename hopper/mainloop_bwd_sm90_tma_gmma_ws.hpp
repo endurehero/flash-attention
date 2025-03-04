@@ -163,13 +163,15 @@ struct CollectiveMainloopBwdSm90 {
     // Q & dO are used in the SdP Mma and Q^T and dO^T are used in the dKV Mma.
     // Since this is GMMA::Major::K, the M dimension (kBlockM) doesn't matter for the layout, only the K dimension
     // changes the layout.
-    using SmemLayoutAtomQdO = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
+    using SmemLayoutAtomQ = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
                                        Int<kBlockM>, Int<kHeadDim / (NumMmaWarpGroups / AtomLayoutNdKV)>>()); // for dKV_Mma
+    using SmemLayoutAtomdO = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
+                                       Int<kBlockM>, Int<kHeadDimV / (NumMmaWarpGroups / AtomLayoutNdKV)>>()); // for dKV_Mma
     using SmemLayoutQ =
-        decltype(tile_to_shape(SmemLayoutAtomQdO{},
+        decltype(tile_to_shape(SmemLayoutAtomQ{},
                  make_shape(shape<0>(TileShape_MNK{}), shape<2>(TileShape_MNK{}), Int<kStages>{})));
     using SmemLayoutdO =
-        decltype(tile_to_shape(SmemLayoutAtomQdO{},
+        decltype(tile_to_shape(SmemLayoutAtomdO{},
                  make_shape(shape<0>(TileShapePV_MNK{}), shape<2>(TileShapePV_MNK{}), Int<kStages_dO>{})));
 
     using SmemLayoutAtomK = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
@@ -282,6 +284,7 @@ struct CollectiveMainloopBwdSm90 {
     static constexpr uint32_t TmaTransactionBytesK = static_cast<uint32_t>(size(SmemLayoutK{}) * cutlass::sizeof_bits_v<Element> / 8);
     static constexpr uint32_t TmaTransactionBytesV = static_cast<uint32_t>(size(SmemLayoutV{}) * cutlass::sizeof_bits_v<Element> / 8);
     static constexpr uint32_t TmaTransactionBytesLSE = static_cast<uint32_t>(size(select<0>(SmemLayoutLSE{})) * cutlass::sizeof_bits_v<ElementAccum> / 8);
+    static constexpr uint32_t TmaTransactionBytesdO = static_cast<uint32_t>(size(take<0, 2>(SmemLayoutdO{})) * cutlass::sizeof_bits_v<Element> / 8);
 
     // These are tuned for speed. They don't affect correctness.
     // We have separate iterations with causal masking. Not necessary for hdim 128 but for hdim 64

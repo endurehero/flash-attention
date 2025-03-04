@@ -195,8 +195,12 @@ public:
         auto role_dO = warp_group_idx == 0
             ? MainloopPipeline_dO::ThreadCategory::Producer
             : MainloopPipeline_dO::ThreadCategory::Consumer;
-        PipelineParams_dO pipeline_params_dO {pipeline_params.transaction_bytes, role_dO, pipeline_params.is_leader, pipeline_params.num_consumers};
-        MainloopPipeline_dO pipeline_do(shared_storage.pipelines.pipeline_do, cute::conditional_return<Q_dO_same_stages>(pipeline_params, pipeline_params_dO), ClusterShape{});
+        PipelineParams_dO pipeline_params_dO {
+            CollectiveMainloop::TmaTransactionBytesdO + CollectiveMainloop::TmaTransactionBytesLSE,
+            role_dO,
+            pipeline_params.is_leader,
+            pipeline_params.num_consumers};
+        MainloopPipeline_dO pipeline_do(shared_storage.pipelines.pipeline_do, pipeline_params_dO, ClusterShape{});
 
         CollectiveMainloop mainloop;
         CollectiveEpilogue epilogue;

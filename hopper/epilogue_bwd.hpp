@@ -107,6 +107,7 @@ struct CollectiveEpilogueBwd {
         ShapedKV const shape_dK;
         StridedKV const stride_dK;
         Element* ptr_dV;
+        ShapedKV const shape_dV;
         StridedKV const stride_dV;
         int const num_heads_q;
         int* dk_semaphore;
@@ -359,6 +360,7 @@ struct CollectiveEpilogueBwdGQA {
         ShapedKV const shape_dKaccum;
         StridedKV const stride_dKaccum;
         ElementAccum* ptr_dVaccum;
+        ShapedKV const shape_dVaccum;
         StridedKV const stride_dVaccum;
         int num_heads_q;
         int* dk_semaphore;

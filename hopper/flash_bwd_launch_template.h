@@ -49,7 +49,7 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     using PreprocessKernel = flash::FlashAttnBwdPreprocess<TileShape_MK, Element, ElementAccum, ArchTag, /*Clear_dQaccum=*/true, Varlen>;
     typename PreprocessKernel::Arguments preprocess_args {
         static_cast<Element const*>(params.o_ptr),
-        {seqlen_q, params.d, params.h, batch_q},  // shape_O
+        {seqlen_q, params.dv, params.h, batch_q},  // shape_O
         {params.o_row_stride, _1{}, params.o_head_stride, !is_varlen_q ? params.o_batch_stride : 0},  // stride_O
         static_cast<Element const*>(params.do_ptr),
         {params.do_row_stride, _1{}, params.do_head_stride, !is_varlen_q ? params.do_batch_stride : 0},  // stride_dO
@@ -148,6 +148,13 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
             }
         }(),
         static_cast<typename CollectiveEpilogue::Element*>(!GQA ? params.dv_ptr : params.dv_accum_ptr),
+        [&] {
+            if constexpr (!GQA) {
+                return typename CollectiveEpilogue::ShapedKV {seqlen_k, params.dv, params.h, batch_k};  // shape_dV
+            } else {
+                return typename CollectiveEpilogue::ShapedKV {seqlen_k_rounded * params.dv_rounded, params.h_k, batch_k};  // shape_dVaccum
+            }
+        }(),
         [&] {
             if constexpr (!GQA) {
                 return typename CollectiveEpilogue::StridedKV {params.dv_row_stride, _1{}, params.dv_head_stride, !is_varlen_k ? params.dv_batch_stride : 0};  // stride_dV

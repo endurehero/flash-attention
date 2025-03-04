@@ -45,8 +45,8 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     int batch_q = !is_varlen_q ? params.b : 1;
     int batch_k = !is_varlen_k ? params.b : 1;
 
-    using TileShape_MK = cute::Shape<Int<kBlockM>, Int<kHeadDim>>;
-    using PreprocessKernel = flash::FlashAttnBwdPreprocess<TileShape_MK, Element, ElementAccum, ArchTag, /*Clear_dQaccum=*/true, Varlen>;
+    using TileShapeOV_MK = cute::Shape<Int<kBlockM>, Int<kHeadDimV>>;
+    using PreprocessKernel = flash::FlashAttnBwdPreprocess<TileShapeOV_MK, Element, ElementAccum, ArchTag, /*Clear_dQaccum=*/true, Varlen>;
     typename PreprocessKernel::Arguments preprocess_args {
         static_cast<Element const*>(params.o_ptr),
         {seqlen_q, params.dv, params.h, batch_q},  // shape_O
@@ -219,7 +219,8 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     }
     CHECK_CUDA_KERNEL_LAUNCH();
 
-    using PostprocessKernel = flash::FlashAttnBwdPostprocessConvertdQ<TileShape_MK, Element, ElementAccum, ArchTag,
+    using TileShapeQK_MK = cute::Shape<Int<kBlockM>, Int<kHeadDim>>;
+    using PostprocessKernel = flash::FlashAttnBwdPostprocessConvertdQ<TileShapeQK_MK, Element, ElementAccum, ArchTag,
         AttnKernel::CollectiveMainloop::NumMmaThreads,
         typename AttnKernel::CollectiveMainloop::TiledMmadQ,
         AttnKernel::CollectiveMainloop::dQ_swapAB
@@ -236,7 +237,7 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
         params.seqused_q
     };
     typename PostprocessKernel::Params postprocess_params = PostprocessKernel::to_underlying_arguments(postprocess_args);
-    int num_m_block_postprocess = cute::ceil_div(params.seqlen_q, get<0>(TileShape_MK{}));
+    int num_m_block_postprocess = cute::ceil_div(params.seqlen_q, get<0>(TileShapeQK_MK{}));
     dim3 grid_m_postprocess(num_m_block_postprocess, params.h, params.b);
     int smem_size_postprocess = PostprocessKernel::SharedStorageSize;
     if (smem_size_postprocess >= 48 * 1024) {

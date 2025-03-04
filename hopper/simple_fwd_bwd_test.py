@@ -9,6 +9,8 @@ from functools import partial
 from einops import rearrange, repeat
 from flash_attn_interface import _flash_attn_forward, _flash_attn_backward
 
+torch.manual_seed(42)
+
 def construct_local_mask(
     seqlen_q,
     seqlen_k,

@@ -478,6 +478,17 @@ if not SKIP_CUDA_BUILD:
         + ([192] if not DISABLE_HDIM192 else [])
         + ([256] if not DISABLE_HDIM256 else [])
     )
+
+    HEAD_DIFF_DIMENSIONS_QK_BWD = (
+        []
+        + ([192] if not DISABLE_HDIM192 else [])
+    )
+
+    HEAD_DIFF_DIMENSIONS_VO_BWD = (
+        []
+        + ([128] if not DISABLE_HDIM192 else [])
+    )
+
     HEAD_DIMENSIONS_FWD = ["all", "diff"]
     HEAD_DIMENSIONS_FWD_SM80 = HEAD_DIMENSIONS_BWD
     SPLIT = [""] + (["_split"] if not DISABLE_SPLIT else [])
@@ -496,6 +507,9 @@ if not SKIP_CUDA_BUILD:
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP)]
     sources_bwd_sm90 = [f"instantiations/flash_bwd_hdim{hdim}_{dtype}{softcap}_sm90.cu"
                         for hdim, dtype, softcap in itertools.product(HEAD_DIMENSIONS_BWD, DTYPE_BWD, SOFTCAP_ALL)]
+
+    sources_bwd_sm90_diff = [f"instantiations/flash_bwd_hdim{hdim}_{hdimv}_{dtype}{softcap}_sm90.cu"
+                        for hdim, hdimv, dtype, softcap in itertools.product(HEAD_DIFF_DIMENSIONS_QK_BWD, HEAD_DIFF_DIMENSIONS_VO_BWD, DTYPE_BWD, SOFTCAP_ALL)]
     if DISABLE_BACKWARD:
         sources_bwd_sm90 = []
         sources_bwd_sm80 = []
@@ -503,6 +517,7 @@ if not SKIP_CUDA_BUILD:
         ["flash_api.cpp"]
         + (sources_fwd_sm80 if not DISABLE_SM8x else []) + sources_fwd_sm90
         + (sources_bwd_sm80 if not DISABLE_SM8x else []) + sources_bwd_sm90
+        + sources_bwd_sm90_diff
     )
     if not DISABLE_SPLIT:
         sources += ["flash_fwd_combine.cu"]

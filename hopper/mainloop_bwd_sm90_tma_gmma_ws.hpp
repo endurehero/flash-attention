@@ -180,7 +180,7 @@ struct CollectiveMainloopBwdSm90 {
 
     using SmemLayoutAtomV = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
         decltype(cute::get<1>(TileShapePV_MNK{})), decltype(cute::get<2>(TileShapePV_MNK{}))>());
-    using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtomV{}, select<1, 2>(TileShapePV_MNK{})));
+    using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtomV{}, select<1, 2>(TileShapePV_MNK{}))); 
 
     using SmemLayoutAtomPdS = decltype(cutlass::gemm::collective::detail::ss_smem_selector<PdS_Major, Element,
                                        Int<kBlockM / AtomLayoutMSdP>,
@@ -703,21 +703,21 @@ struct CollectiveMainloopBwdSm90 {
         }
     }
 
-    template <typename SharedStorage, typename FrgTensordKV>
+    template <typename SharedStorage, typename FrgTensordK, typename FrgTensordV>
     CUTLASS_DEVICE bool
     mma(Params const& params,
         MainloopPipeline pipeline_q,
         MainloopPipeline_dO pipeline_do,
         PipelineState& smem_pipe_read,
         PipelineState_dO& smem_pipe_read_do,
-        FrgTensordKV& tdKrdK,
-        FrgTensordKV& tdVrdV,
+        FrgTensordK& tdKrdK,
+        FrgTensordV& tdVrdV,
         int thread_idx,
         int &work_idx,
         cute::tuple<int32_t, int32_t, int32_t> block_coord,
         SharedStorage& shared_storage
         ) {
-        static_assert(is_rmem<FrgTensordKV>::value, "dK and dV tensor must be rmem resident.");
+        static_assert(is_rmem<FrgTensordK>::value && is_rmem<FrgTensordV>::value, "dK and dV tensor must be rmem resident.");
 
         int n_block = get<0>(block_coord);
         int bidb = get<2>(block_coord);

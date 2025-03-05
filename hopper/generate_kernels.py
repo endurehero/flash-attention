@@ -56,8 +56,18 @@ KERNEL_IMPL_TEMPLATE_BWD_SM90 = """#include "flash_bwd_launch_template.h"
 
 #ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
 template<>
-void run_mha_bwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {HEAD_DIM}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
+void run_mha_bwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
     run_mha_bwd_hdim{HEAD_DIM}<{ARCH}, {DTYPE}, {SOFTCAP}>(params, stream);
+}}
+#endif
+"""
+
+KERNEL_IMPL_TEMPLATE_BWD_SM90_DIFF_HEADDIM = """#include "flash_bwd_launch_template.h"
+
+#ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
+template<>
+void run_mha_bwd_<{ARCH}, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
+    run_mha_bwd_hdim{HEAD_DIM}_{HEAD_DIM_V}<{ARCH}, {DTYPE}, {SOFTCAP}>(params, stream);
 }}
 #endif
 """
@@ -67,11 +77,11 @@ KERNEL_IMPL_TEMPLATE_BWD_SM8x = """#include "flash_bwd_launch_template.h"
 #ifndef FLASHATTENTION_DISABLE_SM8x
 #ifndef FLASHATTENTION_DISABLE_HDIM{HEAD_DIM}
 template<>
-void run_mha_bwd_<80, {DTYPE}, {HEAD_DIM}, {HEAD_DIM}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
+void run_mha_bwd_<80, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
     run_mha_bwd_hdim{HEAD_DIM}<80, {DTYPE}, {SOFTCAP}>(params, stream);
 }}
 template<>
-void run_mha_bwd_<86, {DTYPE}, {HEAD_DIM}, {HEAD_DIM}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
+void run_mha_bwd_<86, {DTYPE}, {HEAD_DIM}, {HEAD_DIM_V}, {SOFTCAP}>(Flash_bwd_params &params, cudaStream_t stream) {{
     run_mha_bwd_hdim{HEAD_DIM}<86, {DTYPE}, {SOFTCAP}>(params, stream);
 }}
 #endif
@@ -113,13 +123,19 @@ class Kernel:
                 )
         elif self.direction == "bwd":
             if self.sm == 90:
-                return KERNEL_IMPL_TEMPLATE_BWD_SM90.format(
-                    ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim,
-                    SOFTCAP=str(self.softcap).lower()
-                )
+                if self.head_dim != self.head_dim_v:
+                    return KERNEL_IMPL_TEMPLATE_BWD_SM90_DIFF_HEADDIM.format(
+                        ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim, HEAD_DIM_V=self.head_dim_v,
+                        SOFTCAP=str(self.softcap).lower()
+                    )
+                else:
+                    return KERNEL_IMPL_TEMPLATE_BWD_SM90.format(
+                        ARCH=str(self.sm), DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim, HEAD_DIM_V=self.head_dim_v,
+                        SOFTCAP=str(self.softcap).lower()
+                    )
             else:
                 return KERNEL_IMPL_TEMPLATE_BWD_SM8x.format(
-                    DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim,
+                    DTYPE=DTYPE_MAP[self.dtype], HEAD_DIM=self.head_dim, HEAD_DIM_V=self.head_dim_v,
                     SOFTCAP=str(self.softcap).lower()
                 )
 
@@ -141,7 +157,10 @@ def get_all_kernels() -> List[Kernel]:
         if sm == 90 and head_dim == 64 and dtype in ["bf16", "fp16"]:
             yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, head_dim_v=512, split=split, paged_kv=paged_kv, softcap=softcap, packgqa=packgqa, direction="fwd")
     for dtype, head_dim, softcap, sm in itertools.product(DTYPE_MAP_BWD.keys(), HEAD_DIMENSIONS, SOFTCAP, SM):
-        yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, head_dim_v=head_dim, split=False, paged_kv=False, softcap=softcap, packgqa=False, direction="bwd")
+        if sm == 90 and head_dim == 192:
+            yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, head_dim_v=128, split=False, paged_kv=False, softcap=softcap, packgqa=False, direction="bwd")
+        else:
+            yield Kernel(sm=sm, dtype=dtype, head_dim=head_dim, head_dim_v=head_dim, split=False, paged_kv=False, softcap=softcap, packgqa=False, direction="bwd")
 
 
 def batch_hdim(kernels_all) -> List[KERNEL_BATCH]:

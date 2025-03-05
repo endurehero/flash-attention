@@ -18,11 +18,12 @@ namespace flash {
 
 using namespace cute;
 
-template <class TileShape_MNK_, class Element_, class ArchTag_,
+template <class TileShape_MNK_, class TileShapePV_MNK_, class Element_, class ArchTag_,
           int NumEpilogueThreads_, bool Varlen_, bool dKV_swapAB_, int AtomLayoutKdKV=1>
 struct CollectiveEpilogueBwd {
 
     using TileShape_MNK = TileShape_MNK_;
+    using TileShapePV_MNK = TileShapePV_MNK_;
     using Element = Element_;
     using ArchTag = ArchTag_;
     static constexpr int NumEpilogueThreads = NumEpilogueThreads_;
@@ -37,39 +38,70 @@ struct CollectiveEpilogueBwd {
     // These are for storing the output tensor without TMA (e.g., for setting output to zero)
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(get<2>(TileShape_MNK{}) % kGmemElemsPerLoad == 0, "Headdim must be a multiple of kGmemElemsPerLoad");
+    static_assert(get<2>(TileShapePV_MNK{}) % kGmemElemsPerLoad == 0, "HeaddimV must be a multiple of kGmemElemsPerLoad");
     static constexpr int kHeadDim = get<2>(TileShape_MNK{});
-    static constexpr int kGmemThreadsPerRow = cutlass::gcd(kHeadDim / kGmemElemsPerLoad, NumEpilogueThreads);
-    static_assert(NumEpilogueThreads % kGmemThreadsPerRow == 0, "NumEpilogueThreads must be a multiple of kGmemThreadsPerRow");
-    using GmemLayoutAtom = Layout<Shape <Int<NumEpilogueThreads / kGmemThreadsPerRow>, Int<kGmemThreadsPerRow>>,
-                                  Stride<Int<kGmemThreadsPerRow>, _1>>;
-    using GmemTiledCopydKV = decltype(
+    static constexpr int kHeadDimV = get<2>(TileShapePV_MNK{});
+    static constexpr int kGmemThreadsPerRowK = cutlass::gcd(kHeadDim / kGmemElemsPerLoad, NumEpilogueThreads);
+    static constexpr int kGmemThreadsPerRowV = cutlass::gcd(kHeadDimV / kGmemElemsPerLoad, NumEpilogueThreads);
+    static_assert(NumEpilogueThreads % kGmemThreadsPerRowK == 0, "NumEpilogueThreads must be a multiple of kGmemThreadsPerRowK");
+    static_assert(NumEpilogueThreads % kGmemThreadsPerRowV == 0, "NumEpilogueThreads must be a multiple of kGmemThreadsPerRowV");
+    using GmemLayoutAtomK = Layout<Shape <Int<NumEpilogueThreads / kGmemThreadsPerRowK>, Int<kGmemThreadsPerRowK>>,
+                                  Stride<Int<kGmemThreadsPerRowK>, _1>>;
+    using GmemLayoutAtomV = Layout<Shape <Int<NumEpilogueThreads / kGmemThreadsPerRowV>, Int<kGmemThreadsPerRowV>>,
+                                  Stride<Int<kGmemThreadsPerRowV>, _1>>;
+    using GmemTiledCopydK = decltype(
         make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
-                        GmemLayoutAtom{},
+                        GmemLayoutAtomK{},
+                        Layout<Shape<_1, Int<kGmemElemsPerLoad>>>{}));  // Val layout, 8 or 16 vals per store
+    using GmemTiledCopydV = decltype(
+        make_tiled_copy(Copy_Atom<AutoVectorizingCopyWithAssumedAlignment<128>, Element>{},
+                        GmemLayoutAtomV{},
                         Layout<Shape<_1, Int<kGmemElemsPerLoad>>>{}));  // Val layout, 8 or 16 vals per store
 
-    using SmemLayoutAtomdKVTMA = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
+    using SmemLayoutAtomdKTMA = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
                                           // TODO: do we have to change this if dKV_swapAB is true?
                                           decltype(cute::get<1>(TileShape_MNK{})), Int<CUTE_STATIC_V(cute::get<2>(TileShape_MNK{})) / AtomLayoutKdKV>>());
-    using SmemLayoutdKVTMA = decltype(tile_to_shape(SmemLayoutAtomdKVTMA{}, select<1, 2>(TileShape_MNK{})));
-    using SmemLayoutdKVtTMA =
-        decltype(cute::composition(SmemLayoutdKVTMA{},
+    using SmemLayoutAtomdVTMA = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, Element,
+                                          // TODO: do we have to change this if dKV_swapAB is true?
+                                          decltype(cute::get<1>(TileShapePV_MNK{})), Int<CUTE_STATIC_V(cute::get<2>(TileShapePV_MNK{})) / AtomLayoutKdKV>>());
+
+    using SmemLayoutdKTMA = decltype(tile_to_shape(SmemLayoutAtomdKTMA{}, select<1, 2>(TileShape_MNK{})));
+    using SmemLayoutdVTMA = decltype(tile_to_shape(SmemLayoutAtomdVTMA{}, select<1, 2>(TileShapePV_MNK{})));
+    using SmemLayoutdKtTMA =
+        decltype(cute::composition(SmemLayoutdKTMA{},
                                    make_layout(make_shape(get<2>(TileShape_MNK{}), get<1>(TileShape_MNK{})),
                                                make_stride(decltype(get<1>(TileShape_MNK{})){}, _1{}))));
+    using SmemLayoutdVtTMA =
+        decltype(cute::composition(SmemLayoutdVTMA{},
+                                   make_layout(make_shape(get<2>(TileShapePV_MNK{}), get<1>(TileShapePV_MNK{})),
+                                               make_stride(decltype(get<1>(TileShapePV_MNK{})){}, _1{}))));
 
     // If we don't use TMA
     static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : (kHeadDim % 32 == 0 ? 32 : 16);
-    static constexpr int kSwizzle = kBlockKSmem == 64 ? 3 : (kBlockKSmem == 32 ? 2 : 1);
-    using SmemLayoutAtomdKVSTG =
-        decltype(composition(Swizzle<kSwizzle, 3, 3>{},
+    static constexpr int kBlockVSmem = kHeadDimV % 64 == 0 ? 64 : (kHeadDimV % 32 == 0 ? 32 : 16);
+    static constexpr int kSwizzleK = kBlockKSmem == 64 ? 3 : (kBlockKSmem == 32 ? 2 : 1);
+    static constexpr int kSwizzleV = kBlockVSmem == 64 ? 3 : (kBlockVSmem == 32 ? 2 : 1);
+    using SmemLayoutAtomdKSTG =
+        decltype(composition(Swizzle<kSwizzleK, 3, 3>{},
                              Layout<Shape<Int<8>, Int<kBlockKSmem>>,
                              Stride<Int<kBlockKSmem>, _1>>{}));
+    using SmemLayoutAtomdVSTG =
+        decltype(composition(Swizzle<kSwizzleV, 3, 3>{},
+                             Layout<Shape<Int<8>, Int<kBlockVSmem>>,
+                             Stride<Int<kBlockVSmem>, _1>>{}));
 
-    using SmemLayoutAtomdKV = std::conditional_t<Use_TMA, SmemLayoutAtomdKVTMA, SmemLayoutAtomdKVSTG>;
-    using SmemLayoutdKV = decltype(tile_to_shape(SmemLayoutAtomdKV{}, select<1, 2>(TileShape_MNK{})));
-    using SmemLayoutdKVt =
-        decltype(cute::composition(SmemLayoutdKV{},
+    using SmemLayoutAtomdK = std::conditional_t<Use_TMA, SmemLayoutAtomdKTMA, SmemLayoutAtomdKSTG>;
+    using SmemLayoutAtomdV = std::conditional_t<Use_TMA, SmemLayoutAtomdVTMA, SmemLayoutAtomdVSTG>;
+    using SmemLayoutdK = decltype(tile_to_shape(SmemLayoutAtomdK{}, select<1, 2>(TileShape_MNK{})));
+    using SmemLayoutdV = decltype(tile_to_shape(SmemLayoutAtomdV{}, select<1, 2>(TileShapePV_MNK{})));
+    using SmemLayoutdKt =
+        decltype(cute::composition(SmemLayoutdK{},
                                    make_layout(make_shape(get<2>(TileShape_MNK{}), get<1>(TileShape_MNK{})),
                                                make_stride(decltype(get<1>(TileShape_MNK{})){}, _1{}))));
+    using SmemLayoutdVt =
+        decltype(cute::composition(SmemLayoutdV{},
+                                   make_layout(make_shape(get<2>(TileShapePV_MNK{}), get<1>(TileShapePV_MNK{})),
+                                               make_stride(decltype(get<1>(TileShapePV_MNK{})){}, _1{}))));
 
     using SmemCopyAtomdKV = Copy_Atom<
         std::conditional_t<
@@ -79,24 +111,36 @@ struct CollectiveEpilogueBwd {
         >,
         Element>;
 
-    static constexpr size_t SmemAlignmentdKV = ArchTag::kMinComputeCapability >= 90 ? cutlass::detail::alignment_for_swizzle(SmemLayoutdKV{}) : 128;
-    static_assert(SmemAlignmentdKV >= 128, "Require at least 128B alignment");
+    static constexpr size_t SmemAlignmentdK = ArchTag::kMinComputeCapability >= 90 ? cutlass::detail::alignment_for_swizzle(SmemLayoutdK{}) : 128;
+    static constexpr size_t SmemAlignmentdV = ArchTag::kMinComputeCapability >= 90 ? cutlass::detail::alignment_for_swizzle(SmemLayoutdV{}) : 128;
+    static_assert(SmemAlignmentdK >= 128 && SmemAlignmentdV >= 128, "Require at least 128B alignment");
 
-    struct TensorStorage : cute::aligned_struct<SmemAlignmentdKV> {
-        cute::array_aligned<Element, cute::cosize_v<SmemLayoutdKV>, SmemAlignmentdKV> smem_dk;
-        cute::array_aligned<Element, cute::cosize_v<SmemLayoutdKV>, SmemAlignmentdKV> smem_dv;
+    struct TensorStorage : cute::aligned_struct<cute::max(SmemAlignmentdK, SmemAlignmentdV)> {
+        cute::array_aligned<Element, cute::cosize_v<SmemLayoutdK>, SmemAlignmentdK> smem_dk;
+        cute::array_aligned<Element, cute::cosize_v<SmemLayoutdV>, SmemAlignmentdV> smem_dv;
     };
 
     using ShapedKV = cute::Shape<int32_t, int32_t, int32_t, int32_t>;  // (seqlen_k, d, head, batch)
     using StridedKV = cute::Stride<int64_t, _1, int64_t, int64_t>;
 
-    using TMA_dKV = std::conditional_t<
+    using TMA_dK = std::conditional_t<
         Use_TMA,
         decltype(make_tma_copy(
             GmemTiledCopydKVTMA{},
             make_tensor(make_gmem_ptr(static_cast<Element*>(nullptr)), ShapedKV{}, StridedKV{}),
-            SmemLayoutdKVTMA{},
+            SmemLayoutdKTMA{},
             select<1, 2>(TileShape_MNK{}),
+            _1{})),  // no mcast for dKV
+        std::nullptr_t
+        >;
+
+    using TMA_dV = std::conditional_t<
+        Use_TMA,
+        decltype(make_tma_copy(
+            GmemTiledCopydKVTMA{},
+            make_tensor(make_gmem_ptr(static_cast<Element*>(nullptr)), ShapedKV{}, StridedKV{}),
+            SmemLayoutdVTMA{},
+            select<1, 2>(TileShapePV_MNK{}),
             _1{})),  // no mcast for dKV
         std::nullptr_t
         >;
@@ -122,8 +166,10 @@ struct CollectiveEpilogueBwd {
         ShapedKV const shape_dK;
         StridedKV const stride_dK;
         Element* ptr_dV;
+        ShapedKV const shape_dV;
         StridedKV const stride_dV;
-        TMA_dKV tma_store_dK, tma_store_dV;
+        TMA_dK tma_store_dK;
+        TMA_dV tma_store_dV;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
     };
@@ -131,22 +177,22 @@ struct CollectiveEpilogueBwd {
     static Params
     to_underlying_arguments(Arguments const& args) {
         Tensor mdK = make_tensor(make_gmem_ptr(args.ptr_dK), args.shape_dK, args.stride_dK);
-        Tensor mdV = make_tensor(make_gmem_ptr(args.ptr_dV), args.shape_dK, args.stride_dV);
-        TMA_dKV tma_store_dK = [&] {
+        Tensor mdV = make_tensor(make_gmem_ptr(args.ptr_dV), args.shape_dV, args.stride_dV);
+        TMA_dK tma_store_dK = [&] {
             if constexpr (Use_TMA) {
-                return make_tma_copy(GmemTiledCopydKVTMA{}, mdK, SmemLayoutdKVTMA{}, select<1, 2>(TileShape_MNK{}), _1{}); // no mcast for dKV
+                return make_tma_copy(GmemTiledCopydKVTMA{}, mdK, SmemLayoutdKTMA{}, select<1, 2>(TileShape_MNK{}), _1{}); // no mcast for dKV
             } else {
                 return nullptr;
             }
         }();
-        TMA_dKV tma_store_dV = [&] {
+        TMA_dV tma_store_dV = [&] {
             if constexpr (Use_TMA) {
-                return make_tma_copy(GmemTiledCopydKVTMA{}, mdV, SmemLayoutdKVTMA{}, select<1, 2>(TileShape_MNK{}), _1{}); // no mcast for dKV
+                return make_tma_copy(GmemTiledCopydKVTMA{}, mdV, SmemLayoutdVTMA{}, select<1, 2>(TileShapePV_MNK{}), _1{}); // no mcast for dKV
             } else {
                 return nullptr;
             }
         }();
-        return {args.ptr_dK, args.shape_dK, args.stride_dK, args.ptr_dV, args.stride_dV,
+        return {args.ptr_dK, args.shape_dK, args.stride_dK, args.ptr_dV, args.shape_dV, args.stride_dV,
                 tma_store_dK, tma_store_dV, args.cu_seqlens, args.seqused};
     }
 
@@ -172,10 +218,10 @@ struct CollectiveEpilogueBwd {
           ) {
 
         auto [n_block, bidh, bidb] = block_coord;
-        Tensor sdK = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dk.data()), SmemLayoutdKV{}));
-        Tensor sdV = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdKV{}));
-        Tensor sdKt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dk.data()), SmemLayoutdKVt{}));
-        Tensor sdVt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdKVt{}));
+        Tensor sdK = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dk.data()), SmemLayoutdK{}));
+        Tensor sdV = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdV{}));
+        Tensor sdKt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dk.data()), SmemLayoutdKt{}));
+        Tensor sdVt = cute::as_position_independent_swizzle_tensor(make_tensor(make_smem_ptr(shared_storage.tensors.epilogue.smem_dv.data()), SmemLayoutdVt{}));
         auto smem_tiled_copy_dK = make_tiled_copy_C(SmemCopyAtomdKV{}, tiled_mmak);
         auto smem_tiled_copy_dV = make_tiled_copy_C(SmemCopyAtomdKV{}, tiled_mmav);
         auto smem_thr_copy_dK = smem_tiled_copy_dK.get_thread_slice(thread_idx);
@@ -201,9 +247,9 @@ struct CollectiveEpilogueBwd {
                                                 cutlass::arch::ReservedNamedBarriers::EpilogueBarrier);
 
             Tensor mdK = params.tma_store_dK.get_tma_tensor(params.shape_dK);
-            Tensor mdV = params.tma_store_dV.get_tma_tensor(params.shape_dK);
+            Tensor mdV = params.tma_store_dV.get_tma_tensor(params.shape_dV);
             Tensor gdK = local_tile(mdK(_, _, bidh, bidb), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
-            Tensor gdV = local_tile(mdV(_, _, bidh, bidb), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
+            Tensor gdV = local_tile(mdV(_, _, bidh, bidb), select<1, 2>(TileShapePV_MNK{}), make_coord(n_block, _0{}));  // (M, K)
             auto block_tma_dK = params.tma_store_dK.get_slice(_0{});
             auto block_tma_dV = params.tma_store_dV.get_slice(_0{});
             Tensor tdKgdK = block_tma_dK.partition_D(gdK);  // (TMA, TMA_M, TMA_K)
@@ -231,39 +277,47 @@ struct CollectiveEpilogueBwd {
             bool const is_varlen = Varlen && params.cu_seqlens;
             Tensor mdK = make_tensor(make_gmem_ptr(params.ptr_dK), params.shape_dK, params.stride_dK)(_, _, bidh, !is_varlen ? bidb : 0);
             Tensor gdK = local_tile(cute::domain_offset(make_coord(seqlen_info.offset, _0{}), mdK), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
-            Tensor mdV = make_tensor(make_gmem_ptr(params.ptr_dV), params.shape_dK, params.stride_dV)(_, _, bidh, !is_varlen ? bidb : 0);
-            Tensor gdV = local_tile(cute::domain_offset(make_coord(seqlen_info.offset, _0{}), mdV), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
+            Tensor mdV = make_tensor(make_gmem_ptr(params.ptr_dV), params.shape_dV, params.stride_dV)(_, _, bidh, !is_varlen ? bidb : 0);
+            Tensor gdV = local_tile(cute::domain_offset(make_coord(seqlen_info.offset, _0{}), mdV), select<1, 2>(TileShapePV_MNK{}), make_coord(n_block, _0{}));  // (M, K)
 
-            GmemTiledCopydKV gmem_tiled_copy_dKV;
-            auto gmem_thr_copy_dKV = gmem_tiled_copy_dKV.get_thread_slice(thread_idx);
-            Tensor tdKVgdV = gmem_thr_copy_dKV.partition_D(gdV);
-            Tensor tdKVsdV = gmem_thr_copy_dKV.partition_S(sdV); // (TMA, TMA_M, TMA_K)
-            Tensor tdKVgdK = gmem_thr_copy_dKV.partition_D(gdK);
-            Tensor tdKVsdK = gmem_thr_copy_dKV.partition_S(sdK); // (TMA, TMA_M, TMA_K)
-            Tensor tdKVrdV = make_fragment_like(tdKVgdV);
-            Tensor tdKVrdK = make_fragment_like(tdKVgdK);
-            Tensor cdKV = cute::make_identity_tensor(select<1, 2>(TileShape_MNK{}));  // (BLK_N,BLK_K) -> (blk_n,blk_k)
+            GmemTiledCopydK gmem_tiled_copy_dK;
+            GmemTiledCopydV gmem_tiled_copy_dV;
+            auto gmem_thr_copy_dK = gmem_tiled_copy_dK.get_thread_slice(thread_idx);
+            auto gmem_thr_copy_dV = gmem_tiled_copy_dV.get_thread_slice(thread_idx);
+            Tensor tdVgdV = gmem_thr_copy_dV.partition_D(gdV);
+            Tensor tdVsdV = gmem_thr_copy_dV.partition_S(sdV); // (TMA, TMA_M, TMA_K)
+            Tensor tdKgdK = gmem_thr_copy_dK.partition_D(gdK);
+            Tensor tdKsdK = gmem_thr_copy_dK.partition_S(sdK); // (TMA, TMA_M, TMA_K)
+            Tensor tdVrdV = make_fragment_like(tdVgdV);
+            Tensor tdKrdK = make_fragment_like(tdKgdK);
+            Tensor cdK = cute::make_identity_tensor(select<1, 2>(TileShape_MNK{}));  // (BLK_N,BLK_K) -> (blk_n,blk_k)
+            Tensor cdV = cute::make_identity_tensor(select<1, 2>(TileShapePV_MNK{}));  // (BLK_N,BLK_K) -> (blk_n,blk_k)
             // Repeat the partitioning with identity layouts
-            Tensor tdKVcdKV = gmem_thr_copy_dKV.partition_D(cdKV);
-            Tensor tdKVpdKV = make_tensor<bool>(make_shape(size<2>(tdKVgdV)));
+            Tensor tdKcdK = gmem_thr_copy_dK.partition_D(cdK);
+            Tensor tdKpdK = make_tensor<bool>(make_shape(size<2>(tdKgdK)));
             #pragma unroll
-            for (int k = 0; k < size(tdKVpdKV); ++k) { tdKVpdKV(k) = get<1>(tdKVcdKV(_0{}, _0{}, k)) < get<1>(params.shape_dK); }
+            for (int k = 0; k < size(tdKpdK); ++k) { tdKpdK(k) = get<1>(tdKcdK(_0{}, _0{}, k)) < get<1>(params.shape_dK); }
+
+            Tensor tdVcdV = gmem_thr_copy_dV.partition_D(cdV);
+            Tensor tdVpdV = make_tensor<bool>(make_shape(size<2>(tdVgdV)));
+            #pragma unroll
+            for (int k = 0; k < size(tdVpdV); ++k) { tdVpdV(k) = get<1>(tdVcdV(_0{}, _0{}, k)) < get<1>(params.shape_dV); }
             // Need to check OOB when reading from smem if kBlockN isn't evenly tiled
-            static constexpr bool EvenN = kBlockN % CUTE_STATIC_V(size<0>(GmemLayoutAtom{})) == 0;
+            static constexpr bool EvenN = kBlockN % CUTE_STATIC_V(size<0>(GmemLayoutAtomK{})) == 0;
             flash::copy</*Is_even_MN=*/EvenN, /*Is_even_K=*/true, /*Clear_OOB_MN=*/false>(
-                gmem_tiled_copy_dKV, tdKVsdV, tdKVrdV, tdKVcdKV, tdKVpdKV, kBlockN);
+                gmem_tiled_copy_dV, tdVsdV, tdVrdV, tdVcdV, tdVpdV, kBlockN);
             flash::copy</*Is_even_MN=*/EvenN, /*Is_even_K=*/true, /*Clear_OOB_MN=*/false>(
-                gmem_tiled_copy_dKV, tdKVsdK, tdKVrdK, tdKVcdKV, tdKVpdKV, kBlockN);
+                gmem_tiled_copy_dK, tdKsdK, tdKrdK, tdKcdK, tdKpdK, kBlockN);
             // // Tell warp 0 that smem_k and smem_v are ready
             // cutlass::arch::fence_view_async_shared(); // ensure smem reads are done before next TMA to smem_k/v
             // flash::named_barrier_arrive(NumEpilogueThreads + cutlass::NumThreadsPerWarp, static_cast<uint32_t>(BwdNamedBarriers::KVEmpty) /*id*/);
             // Construct identity layout for gdKV
             // Clear_OOB_K must be false since we don't want to write zeros to gmem
             flash::copy</*Is_even_MN=*/false, /*Is_even_K=*/false, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-                gmem_tiled_copy_dKV, tdKVrdV, tdKVgdV, tdKVcdKV, tdKVpdKV, std::min(seqlen_info.seqlen - n_block * kBlockN, kBlockN)
+                gmem_tiled_copy_dV, tdVrdV, tdVgdV, tdVcdV, tdVpdV, std::min(seqlen_info.seqlen - n_block * kBlockN, kBlockN)
             );
             flash::copy</*Is_even_MN=*/false, /*Is_even_K=*/false, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-                gmem_tiled_copy_dKV, tdKVrdK, tdKVgdK, tdKVcdKV, tdKVpdKV, std::min(seqlen_info.seqlen - n_block * kBlockN, kBlockN)
+                gmem_tiled_copy_dK, tdKrdK, tdKgdK, tdKcdK, tdKpdK, std::min(seqlen_info.seqlen - n_block * kBlockN, kBlockN)
             );
         }
     }
@@ -286,34 +340,45 @@ struct CollectiveEpilogueBwd {
         bool const is_varlen = Varlen && params.cu_seqlens;
         Tensor mdK = make_tensor(make_gmem_ptr(params.ptr_dK), params.shape_dK, params.stride_dK)(_, _, bidh, !is_varlen ? bidb : 0);
         Tensor gdK = local_tile(cute::domain_offset(make_coord(seqlen_info.offset, _0{}), mdK), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
-        Tensor mdV = make_tensor(make_gmem_ptr(params.ptr_dV), params.shape_dK, params.stride_dV)(_, _, bidh, !is_varlen ? bidb : 0);
+        Tensor mdV = make_tensor(make_gmem_ptr(params.ptr_dV), params.shape_dV, params.stride_dV)(_, _, bidh, !is_varlen ? bidb : 0);
         Tensor gdV = local_tile(cute::domain_offset(make_coord(seqlen_info.offset, _0{}), mdV), select<1, 2>(TileShape_MNK{}), make_coord(n_block, _0{}));  // (M, K)
 
-        GmemTiledCopydKV gmem_tiled_copy_dKV;
-        auto gmem_thr_copy_dKV = gmem_tiled_copy_dKV.get_thread_slice(thread_idx);
-        Tensor tdKVgdK = gmem_thr_copy_dKV.partition_D(gdK);
-        Tensor tdKVgdV = gmem_thr_copy_dKV.partition_D(gdV);
-        Tensor tdKVrdKV = make_fragment_like(tdKVgdK);
-        clear(tdKVrdKV);
+        GmemTiledCopydK gmem_tiled_copy_dK;
+        GmemTiledCopydV gmem_tiled_copy_dV;
+        auto gmem_thr_copy_dK = gmem_tiled_copy_dK.get_thread_slice(thread_idx);
+        auto gmem_thr_copy_dV = gmem_tiled_copy_dV.get_thread_slice(thread_idx);
+        Tensor tdKgdK = gmem_thr_copy_dK.partition_D(gdK);
+        Tensor tdVgdV = gmem_thr_copy_dV.partition_D(gdV);
+        Tensor tdKrdK = make_fragment_like(tdKgdK);
+        Tensor tdVrdV = make_fragment_like(tdVgdV);
+        clear(tdKrdK);
+        clear(tdVrdV);
         // Construct identity layout for gdKV
-        Tensor cdKV = cute::make_identity_tensor(select<1, 2>(TileShape_MNK{}));  // (BLK_M,BLK_K) -> (blk_m,blk_k)
+        Tensor cdK = cute::make_identity_tensor(select<1, 2>(TileShape_MNK{}));  // (BLK_M,BLK_K) -> (blk_m,blk_k)
+        Tensor cdV = cute::make_identity_tensor(select<1, 2>(TileShapePV_MNK{}));  // (BLK_M,BLK_K) -> (blk_m,blk_k)
         // Repeat the partitioning with identity layouts
-        Tensor tdKVcdKV = gmem_thr_copy_dKV.partition_D(cdKV);
-        Tensor tdKVpdKV = make_tensor<bool>(make_shape(size<2>(tdKVgdK)));
+        Tensor tdKcdK = gmem_thr_copy_dK.partition_D(cdK);
+        Tensor tdKpdK = make_tensor<bool>(make_shape(size<2>(tdKgdK)));
+
+        Tensor tdVcdV = gmem_thr_copy_dV.partition_D(cdV);
+        Tensor tdVpdV = make_tensor<bool>(make_shape(size<2>(tdVgdV)));
         #pragma unroll
-        for (int k = 0; k < size(tdKVpdKV); ++k) { tdKVpdKV(k) = get<1>(tdKVcdKV(_0{}, _0{}, k)) < get<1>(params.shape_dK); }
+        for (int k = 0; k < size(tdKpdK); ++k) { tdKpdK(k) = get<1>(tdKcdK(_0{}, _0{}, k)) < get<1>(params.shape_dK); }
+
+        #pragma unroll
+        for (int k = 0; k < size(tdVpdV); ++k) { tdVpdV(k) = get<1>(tdVcdV(_0{}, _0{}, k)) < get<1>(params.shape_dV); }
         // Clear_OOB_K must be false since we don't want to write zeros to gmem
         flash::copy</*Is_even_MN=*/false, /*Is_even_K=*/false, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-            gmem_tiled_copy_dKV, tdKVrdKV, tdKVgdK, tdKVcdKV, tdKVpdKV, seqlen_info.seqlen - n_block * kBlockN
+            gmem_tiled_copy_dK, tdKrdK, tdKgdK, tdKcdK, tdKpdK, seqlen_info.seqlen - n_block * kBlockN
         );
         flash::copy</*Is_even_MN=*/false, /*Is_even_K=*/false, /*Clear_OOB_MN=*/false, /*Clear_OOB_K=*/false>(
-            gmem_tiled_copy_dKV, tdKVrdKV, tdKVgdV, tdKVcdKV, tdKVpdKV, seqlen_info.seqlen - n_block * kBlockN
+            gmem_tiled_copy_dV, tdVrdV, tdVgdV, tdVcdV, tdVpdV, seqlen_info.seqlen - n_block * kBlockN
         );
     }
 
 };
 
-template <class TileShape_MNK_, class ElementAccum, class ArchTag_,
+template <class TileShape_MNK_, class TileShapePV_MNK_, class ElementAccum, class ArchTag_,
           int NumEpilogueThreads_, bool Varlen_, bool Deterministic>
 struct CollectiveEpilogueBwdGQA {
 

@@ -205,11 +205,11 @@ struct CollectiveEpilogueBwd {
         }
     }
 
-    template <typename SharedStorage, typename FrgTensorO, typename TiledMmaK, typename TiledMmaV>
+    template <typename SharedStorage, typename FrgTensorK, typename FrgTensorV, typename TiledMmaK, typename TiledMmaV>
     CUTLASS_DEVICE void
     store(Params const& params,
-          FrgTensorO const& tdKrdK,
-          FrgTensorO const& tdVrdV,
+          FrgTensorK const& tdKrdK,
+          FrgTensorV const& tdVrdV,
           SharedStorage& shared_storage,
           TiledMmaK tiled_mmak,
           TiledMmaV tiled_mmav,

@@ -378,11 +378,12 @@ void run_mha_bwd_hdim192_128(Flash_bwd_params &params, cudaStream_t stream) {
     CAUSAL_LOCAL_SWITCH(params.is_causal, params.is_local, Is_causal, Is_local, [&] {
         if constexpr (Arch >= 90) {
             run_mha_bwd_dispatch<Arch, T, 64, 64, 192, 128, Is_causal, Is_local, Has_softcap, 1, 1, false, false, false, 2, 1, 1, 1, false>(params, stream);
-        } else if constexpr (Arch == 86 || Arch == 89) {
-            run_mha_bwd_dispatch<Arch, T, 64, 64, 192, 128, Is_causal, Is_local, Has_softcap, 1, 1, false, false, false, 2, 2, 2, 2, true>(params, stream);
-        } else {
-            run_mha_bwd_dispatch<Arch, T, 64, 80, 192, 128, Is_causal, Is_local, Has_softcap, 1, 2, false, true, false, 2, 4, 2, 2, false>(params, stream);
         }
+        // } else if constexpr (Arch == 86 || Arch == 89) {
+        //     run_mha_bwd_dispatch<Arch, T, 64, 64, 192, 128, Is_causal, Is_local, Has_softcap, 1, 1, false, false, false, 2, 2, 2, 2, true>(params, stream);
+        // } else {
+        //     run_mha_bwd_dispatch<Arch, T, 64, 80, 192, 128, Is_causal, Is_local, Has_softcap, 1, 2, false, true, false, 2, 4, 2, 2, false>(params, stream);
+        // }
     });
 }
 

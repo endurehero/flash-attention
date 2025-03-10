@@ -91,7 +91,7 @@ void run_flash_bwd(Flash_bwd_params &params, cudaStream_t stream) {
     >;
     using CollectiveEpilogue = std::conditional_t<
         !GQA,
-        flash::CollectiveEpilogueBwd<TileShape_MNK, TileShapePV_MNK, Element, ArchTag, CollectiveMainloop::NumMmaThreads, Varlen, dKV_swapAB, NumMmaWarpGroups * (Arch >= 90 ? 1 : cutlass::NumWarpsPerWarpGroup) / AtomLayoutNdKV>,
+        flash::CollectiveEpilogueBwd<TileShape_MNK, TileShapePV_MNK, Element, ArchTag, typename CollectiveMainloop::TiledMmadK, typename CollectiveMainloop::TiledMmadV, CollectiveMainloop::NumMmaThreads, Varlen, dKV_swapAB, NumMmaWarpGroups * (Arch >= 90 ? 1 : cutlass::NumWarpsPerWarpGroup) / AtomLayoutNdKV>,
         flash::CollectiveEpilogueBwdGQA<TileShape_MNK, TileShapePV_MNK, ElementAccum, ArchTag, CollectiveMainloop::NumMmaThreads, Varlen, Deterministic>
     >;
     using Scheduler = flash::SingleTileScheduler<Varlen, false /*Split*/, false /*PackGQA*/, kBlockN>;

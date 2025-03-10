@@ -18,7 +18,7 @@ namespace flash {
 
 using namespace cute;
 
-template <class TileShape_MNK_, class TileShapePV_MNK_, class Element_, class ArchTag_,
+template <class TileShape_MNK_, class TileShapePV_MNK_, class Element_, class ArchTag_, class TiledMmaK_, class TiledMmaV_,
           int NumEpilogueThreads_, bool Varlen_, bool dKV_swapAB_, int AtomLayoutKdKV=1>
 struct CollectiveEpilogueBwd {
 
@@ -26,6 +26,8 @@ struct CollectiveEpilogueBwd {
     using TileShapePV_MNK = TileShapePV_MNK_;
     using Element = Element_;
     using ArchTag = ArchTag_;
+    using TiledMmaK = TiledMmaK_;
+    using TiledMmaV = TiledMmaV_;
     static constexpr int NumEpilogueThreads = NumEpilogueThreads_;
     static constexpr bool Varlen = Varlen_;
     static constexpr bool dKV_swapAB = dKV_swapAB_;
@@ -75,10 +77,12 @@ struct CollectiveEpilogueBwd {
         decltype(cute::composition(SmemLayoutdVTMA{},
                                    make_layout(make_shape(get<2>(TileShapePV_MNK{}), get<1>(TileShapePV_MNK{})),
                                                make_stride(decltype(get<1>(TileShapePV_MNK{})){}, _1{}))));
+    static constexpr int TiledMmaK_N = (ArchTag::kMinComputeCapability >= 90) ? get<1>(typename TiledMmaK::AtomShape_MNK{}) : kHeadDim;
+    static constexpr int TiledMmaV_N = (ArchTag::kMinComputeCapability >= 90) ? get<1>(typename TiledMmaV::AtomShape_MNK{}) : kHeadDimV;
 
     // If we don't use TMA
-    static constexpr int kBlockKSmem = kHeadDim % 64 == 0 ? 64 : (kHeadDim % 32 == 0 ? 32 : 16);
-    static constexpr int kBlockVSmem = kHeadDimV % 64 == 0 ? 64 : (kHeadDimV % 32 == 0 ? 32 : 16);
+    static constexpr int kBlockKSmem = TiledMmaK_N % 64 == 0 ? 64 : (TiledMmaK_N % 32 == 0 ? 32 : 16);
+    static constexpr int kBlockVSmem = TiledMmaV_N % 64 == 0 ? 64 : (TiledMmaV_N % 32 == 0 ? 32 : 16);
     static constexpr int kSwizzleK = kBlockKSmem == 64 ? 3 : (kBlockKSmem == 32 ? 2 : 1);
     static constexpr int kSwizzleV = kBlockVSmem == 64 ? 3 : (kBlockVSmem == 32 ? 2 : 1);
     using SmemLayoutAtomdKSTG =
@@ -205,7 +209,7 @@ struct CollectiveEpilogueBwd {
         }
     }
 
-    template <typename SharedStorage, typename FrgTensorK, typename FrgTensorV, typename TiledMmaK, typename TiledMmaV>
+    template <typename SharedStorage, typename FrgTensorK, typename FrgTensorV>
     CUTLASS_DEVICE void
     store(Params const& params,
           FrgTensorK const& tdKrdK,

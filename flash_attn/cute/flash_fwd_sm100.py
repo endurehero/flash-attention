@@ -87,7 +87,9 @@ class FlashAttentionForwardSm100:
         self.is_local = is_local
         self.qhead_per_kvhead = qhead_per_kvhead
         self.pack_gqa = False
-        self.s0_s1_barrier = self.head_dim_padded in [64, 96]  # Does S1 need to wait for S0 to finish
+        # Does S1 need to wait for S0 to finish
+        # self.s0_s1_barrier = self.head_dim_padded in [64, 96] and (not self.is_causal and not self.is_local)
+        self.s0_s1_barrier = False
 
         self.softmax0_warp_ids = (0, 1, 2, 3)
         self.softmax1_warp_ids = (4, 5, 6, 7)
@@ -127,19 +129,23 @@ class FlashAttentionForwardSm100:
         self.tmem_vec0_offset = 0
         self.tmem_vec1_offset = self.tmem_vec0_offset + self.n_block_size
 
-        # self.num_regs_softmax = 192
-        # self.num_regs_softmax = 184
-        self.num_regs_softmax = 176
-        # self.num_regs_correction = 104
-        # self.num_regs_correction = 96
-        # self.num_regs_correction = 80
-        self.num_regs_correction = 64 if self.is_causal or self.is_local else 80
-        # self.num_regs_other = 24
-        # self.num_regs_other = 32
-        # self.num_regs_other = 64
-        # self.num_regs_other = 80
-        self.num_regs_other = 96 if self.is_causal or self.is_local else 80
-        # self.num_regs_other = 48
+        if self.head_dim_padded < 96:
+            self.num_regs_softmax = 200
+            self.num_regs_correction = 64
+            self.num_regs_other = 48
+        else:
+            self.num_regs_softmax = 192 if self.is_causal or self.is_local else 184
+            # self.num_regs_softmax = 176
+            # self.num_regs_correction = 96
+            # self.num_regs_correction = 80
+            # self.num_regs_correction = 64 if self.is_causal or self.is_local else 80
+            self.num_regs_correction = 64
+            # self.num_regs_other = 32
+            # self.num_regs_other = 64
+            # self.num_regs_other = 80
+            # self.num_regs_other = 48
+            # self.num_regs_other = 96 if self.is_causal or self.is_local else 80
+            self.num_regs_other = 64 if self.is_causal or self.is_local else 80
         self.num_regs_empty = 24
 
         self.buffer_align_bytes = 1024
@@ -1193,6 +1199,7 @@ class FlashAttentionForwardSm100:
                 for n_tile in cutlass.range(0, n_block_max - n_block_min, unroll=1):
                     n_block = n_block_max - 1 - n_tile
                     mma_si_consumer_phase, si_corr_producer_phase, s0_s1_sequence_phase = softmax_step(mma_si_consumer_phase, si_corr_producer_phase, s0_s1_sequence_phase, n_block, mask_fn=partial(mask_fn, mask_seqlen=False))
+                    # Now that we no longer already have the 1st iteration, need mask_seqlen=True here
 
             # tSrScale_r2t = cute.make_fragment(tSrScale_r2t_shape, Float32)
             # tSrScale_r2t[0] = softmax.row_sum[0]
@@ -1307,7 +1314,7 @@ class FlashAttentionForwardSm100:
             cute.recast_ptr(tSrP_r2t_f32.iterator, dtype=self.q_dtype), tSrS_t2r.layout,
         )
         # softmax.scale_apply_exp2_convert(tSrS_t2r, row_max, tSrP_r2t)
-        softmax.apply_exp2_convert(tSrS_t2r, tSrP_r2t)
+        softmax.apply_exp2_convert(tSrS_t2r, tSrP_r2t, e2e=mask_fn is None, e2e_freq=16 if self.head_dim_padded <= 64 else 16)
         # Sequence barrier arrive
         if const_expr(self.s0_s1_barrier):
             cute.arch.mbarrier_arrive(mbar_ptr + mbar_s0_s1_sequence_offset + (1 - stage) * 4)

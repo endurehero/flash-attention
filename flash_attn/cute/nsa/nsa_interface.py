@@ -75,7 +75,6 @@ def _nsa_slc_fwd(
     assert cu_seqlens_k.shape == (batch_size + 1,), "cu_seqlens_k must have shape (batch_size + 1,)"
 
 
-    
     assert cu_seqlens_q.shape == (batch_size + 1,), "cu_seqlens_q must have shape (batch_size + 1,)"
     assert q.dtype in [torch.float16, torch.bfloat16], "inputs must be float16 or bfloat16"
     assert q.dtype == k.dtype == v.dtype, "inputs must have the same dtype"
@@ -93,6 +92,9 @@ def _nsa_slc_fwd(
         softmax_scale = 1.0 / math.sqrt(head_dim)
 
     qhead_per_kvhead = num_head // num_head_kv
+
+    if group_size is not None:
+        assert qhead_per_kvhead * group_size <= m_block_size
 
     out_torch_dtype = q.dtype
     device = q.device
@@ -123,7 +125,7 @@ def _nsa_slc_fwd(
             n_block_size = 192
 
     compile_key = (
-        dtype, head_dim, head_dim_v, qhead_per_kvhead, causal, 
+        dtype, head_dim, head_dim_v, qhead_per_kvhead, group_size, causal, 
         lse is None, m_block_size, n_block_size, num_threads,
         compute_capability,
     )
@@ -138,6 +140,7 @@ def _nsa_slc_fwd(
                 is_causal=causal,
                 is_local=False,
                 pack_gqa=True,
+                group_size = group_size,
                 m_block_size=m_block_size,
                 n_block_size=n_block_size,
                 # num_stages=1,

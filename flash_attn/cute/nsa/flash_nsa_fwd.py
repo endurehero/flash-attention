@@ -45,6 +45,7 @@ class FlashAttentionForwardBase:
         is_causal: bool = False,
         is_local: bool = False,
         pack_gqa: bool = True,
+        group_size: int = 1,
         m_block_size: int = 128,
         n_block_size: int = 128,
         num_stages: int = 1,
@@ -58,6 +59,7 @@ class FlashAttentionForwardBase:
 
         :param head_dim: head dimension
         :type head_dim: int
+        :param group_size: nsa group query token num
         :param m_block_size: m block size
         :type m_block_size: int
         :param n_block_size: n block size
@@ -80,6 +82,8 @@ class FlashAttentionForwardBase:
         self.is_causal = is_causal
         self.is_local = is_local
         self.pack_gqa = pack_gqa
+        self.group_size = group_size
+        self.real_block_size = group_size * qhead_per_kvhead
         self.m_block_size = m_block_size
         self.n_block_size = n_block_size
         self.num_threads = num_threads
@@ -132,6 +136,9 @@ class FlashAttentionForwardBase:
             return False
         # Check if twice the block size is divisible by the number of threads
         if (m_block_size * 2) % num_threads != 0:
+            return False
+
+        if self.real_block_size > self.m_block_size:
             return False
         return True
 
@@ -689,12 +696,10 @@ class NsaSlcForwardSm90(FlashAttentionForwardBase):
                 stride_LSE_packed = ((mLSE.stride[1], mLSE.stride[0]), mLSE.stride[1] * self.qhead_per_kvhead, *mLSE.stride[2:])
                 mLSE = cute.make_tensor(mLSE.iterator, cute.make_layout(shape_LSE_packed, stride=stride_LSE_packed))
 
-        if const_expr(mCuSeqlensQ is not None):
-            TileScheduler = SingleTileVarlenScheduler
-        else:
-            TileScheduler = SingleTileScheduler if const_expr(not self.is_causal or self.is_local) else SingleTileLPTScheduler
+        
+        TileScheduler = SingleTileVarlenScheduler
         tile_sched_args = TileSchedulerArguments(
-            cute.ceil_div(cute.size(mQ.shape[0]), self.m_block_size),
+            cute.ceil_div(cute.size(mQ.shape[0]), self.group_size * self.qhead_per_kvhead),
             cute.size(mQ.shape[2]),
             cute.size(mQ.shape[3]) if const_expr(mCuSeqlensQ is None) else cute.size(mCuSeqlensQ.shape[0] - 1),
             cute.size(mK.shape[0]),

@@ -52,7 +52,7 @@ def _nsa_slc_fwd(
     cu_seqlens_k: torch.Tensor = None,
     softmax_scale: Optional[float] = None,
     causal: bool = True,
-    topk: Optional[torch.Tensor] = None, #[head_k, total_group, topk]
+    topk_table: Optional[torch.Tensor] = None, #[head_k, total_group, topk]
     cu_group_q: Optional[torch.Tensor] = None, #[b + 1]
     group_size: Optional[int] = None,
     m_block_size: int = 128,
@@ -93,8 +93,15 @@ def _nsa_slc_fwd(
 
     qhead_per_kvhead = num_head // num_head_kv
 
-    if group_size is not None:
-        assert qhead_per_kvhead * group_size <= m_block_size
+    total_group, topk = 0, 0
+    if topk_table is not None:
+        _, total_group, topk = topk_table.shape
+        assert num_head_kv == topk_table.shape[0]
+        assert topk_table.is_cuda and topk_table.stride(0) == 1 and topk_table.dtype == torch.int32, "topk_table is invalid"
+        assert cu_group_q is not None, "cu_group_q should have values when topk_table is not None"
+        assert cu_group_q.shape == (batch_size + 1)
+        assert cu_group_q.is_cuda and cu_group_q.stride(0) == 1 and cu_group_q.dtype == torch.int32, "cu_group_q is invalid"
+        assert group_size is not None and (qhead_per_kvhead * group_size <= m_block_size), "group_size is invalid"
 
     out_torch_dtype = q.dtype
     device = q.device
@@ -115,6 +122,13 @@ def _nsa_slc_fwd(
         from_dlpack(t.detach(), assumed_align=4).mark_layout_dynamic(leading_dim=0) if t is not None else None
         for t in (cu_seqlens_q, cu_seqlens_k,)
     ]
+
+    topk_table_tensor, cu_group_q_tensor = None, None
+    if topk_table is not None:
+        topk_table_tensor, cu_group_q_tensor = [
+            from_dlpack(t.detach(), assumed_align=4).mark_layout_dynamic(leading_dim=t.ndim - 1) if t is not None else None
+            for t in (topk_table, cu_group_q)
+        ]
     
     compute_capability = torch.cuda.get_device_capability()[0] if _compute_capability is None else _compute_capability
     assert compute_capability in [9, 10], "Unsupported compute capability. Supported: 9.x, 10.x"
@@ -153,11 +167,11 @@ def _nsa_slc_fwd(
         # TODO: check @can_implement
         _nsa_slc_fwd.compile_cache[compile_key] = cute.compile(
             fa_fwd, q_tensor, k_tensor, v_tensor, o_tensor, lse_tensor, softmax_scale, current_stream,
-            cu_seqlens_q_tensor, cu_seqlens_k_tensor,
+            cu_seqlens_q_tensor, cu_seqlens_k_tensor, topk_table_tensor, cu_group_q_tensor,
         )
     _nsa_slc_fwd.compile_cache[compile_key](
         q_tensor, k_tensor, v_tensor, o_tensor, lse_tensor, softmax_scale, current_stream,
-        cu_seqlens_q_tensor, cu_seqlens_k_tensor,
+        cu_seqlens_q_tensor, cu_seqlens_k_tensor, topk_table_tensor, cu_group_q_tensor,
     )
     return out, lse
 

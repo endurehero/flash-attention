@@ -83,7 +83,7 @@ class FlashAttentionForwardBase:
         self.is_local = is_local
         self.pack_gqa = pack_gqa
         self.group_size = group_size
-        self.real_block_size = group_size * qhead_per_kvhead
+        self.real_block_size = group_size * qhead_per_kvhead if group_size is not None else m_block_size
         self.m_block_size = m_block_size
         self.n_block_size = n_block_size
         self.num_threads = num_threads
@@ -616,6 +616,8 @@ class NsaSlcForwardSm90(FlashAttentionForwardBase):
         stream: cuda.CUstream,
         mCuSeqlensQ: Optional[cute.Tensor] = None,
         mCuSeqlensK: Optional[cute.Tensor] = None,
+        mTopkTable: Optional[cute.Tensor] = None,
+        mCuGroupQ: Optional[cute.Tensor] = None,
     ):
         """Configures and launches the flash attention kernel.
 
@@ -699,7 +701,7 @@ class NsaSlcForwardSm90(FlashAttentionForwardBase):
         
         TileScheduler = SingleTileVarlenScheduler
         tile_sched_args = TileSchedulerArguments(
-            cute.ceil_div(cute.size(mQ.shape[0]), self.group_size * self.qhead_per_kvhead),
+            cute.ceil_div(cute.size(mQ.shape[0]), self.real_block_size),
             cute.size(mQ.shape[2]),
             cute.size(mQ.shape[3]) if const_expr(mCuSeqlensQ is None) else cute.size(mCuSeqlensQ.shape[0] - 1),
             cute.size(mK.shape[0]),

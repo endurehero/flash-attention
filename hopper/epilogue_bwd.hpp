@@ -109,6 +109,7 @@ struct CollectiveEpilogueBwd {
         Element* ptr_dV;
         ShapedKV const shape_dV;
         StridedKV const stride_dV;
+        int const num_batch;
         int const num_heads_q;
         int* dk_semaphore;
         int* dv_semaphore;
@@ -125,6 +126,7 @@ struct CollectiveEpilogueBwd {
         ShapedKV const shape_dV;
         StridedKV const stride_dV;
         TMA_dKV tma_store_dK, tma_store_dV;
+        int const num_batch;
         int const* cu_seqlens = nullptr;
         int const* seqused = nullptr;
     };
@@ -148,7 +150,7 @@ struct CollectiveEpilogueBwd {
             }
         }();
         return {args.ptr_dK, args.shape_dK, args.stride_dK, args.ptr_dV, args.shape_dV, args.stride_dV,
-                tma_store_dK, tma_store_dV, args.cu_seqlens, args.seqused};
+                tma_store_dK, tma_store_dV, args.num_batch, args.cu_seqlens, args.seqused};
     }
 
     /// Issue Tma Descriptor Prefetch -- ideally from a single thread for best performance
@@ -369,6 +371,7 @@ struct CollectiveEpilogueBwdGQA {
         ElementAccum* ptr_dVaccum;
         ShapedKV const shape_dVaccum;
         StridedKV const stride_dVaccum;
+        int num_batch;
         int num_heads_q;
         int* dk_semaphore;
         int* dv_semaphore;
@@ -385,6 +388,7 @@ struct CollectiveEpilogueBwdGQA {
         ShapedKV const shape_dVaccum;
         StridedKV const stride_dVaccum;
         cutlass::FastDivmod qhead_per_khead_divmod;
+        int num_batch;
         int* dk_semaphore;
         int* dv_semaphore;
         int const* cu_seqlens = nullptr;
@@ -399,7 +403,7 @@ struct CollectiveEpilogueBwdGQA {
         }
         return {args.ptr_dKaccum, args.shape_dKaccum, args.stride_dKaccum, args.ptr_dVaccum, args.shape_dVaccum, args.stride_dVaccum,
                 cutlass::FastDivmod(cute::ceil_div(args.num_heads_q, get<1>(args.shape_dKaccum))),
-                args.dk_semaphore, args.dv_semaphore,
+                args.num_batch, args.dk_semaphore, args.dv_semaphore,
                 args.cu_seqlens, args.seqused};
     }
 
@@ -449,8 +453,8 @@ struct CollectiveEpilogueBwdGQA {
             cute::copy(r2s_tiled_copy_dKVaccum, taccdKVrdV, tdKVsdKVaccum);
         }
 
-        // int const num_batch = params.num_batch;
-        int const num_batch = get<2>(params.shape_dKaccum);
+        int const num_batch = params.num_batch;
+        // int const num_batch = get<2>(params.shape_dKaccum);
         int const num_head_kv = get<1>(params.shape_dKaccum);
         int *lock_ptr = !Deterministic ? nullptr : params.dv_semaphore + bidb * num_head_kv + bidh_kv;
         using Barrier = cutlass::GenericBarrier<cutlass::detail::SyncwarpSync>;

@@ -1342,6 +1342,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tenso
     int const total_q_padded_rounded = round_multiple(total_q + batch_size * kBlockM, kBlockM);
     int const total_k_padded_rounded = round_multiple(total_k + batch_size * kBlockN, kBlockN);
 
+    TORCH_CHECK(!(head_size_rounded == 256 && deterministic), "hdim256 does not support deterministic currently");
+
     if (!is_varlen_q) {
         CHECK_SHAPE(q, batch_size, seqlen_q, num_heads, head_size);
         CHECK_SHAPE(out, batch_size, seqlen_q, num_heads, head_size_v);
@@ -1485,8 +1487,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tenso
     params.dq_semaphore = dq_semaphore.data_ptr<int>();
     if (num_heads_k != num_heads && params.deterministic) {
         // TODO: do we need to zero them out?
-        at::Tensor dk_semaphore = torch::empty({(seqlen_k + kBlockN - 1) / kBlockN, batch_size, num_heads_k}, opts.dtype(torch::kInt32));
-        at::Tensor dv_semaphore = torch::empty({(seqlen_k + kBlockN - 1) / kBlockN, batch_size, num_heads_k}, opts.dtype(torch::kInt32));
+        at::Tensor dk_semaphore = torch::zeros({(seqlen_k + kBlockN - 1) / kBlockN, batch_size, num_heads_k}, opts.dtype(torch::kInt32));
+        at::Tensor dv_semaphore = torch::zeros({(seqlen_k + kBlockN - 1) / kBlockN, batch_size, num_heads_k}, opts.dtype(torch::kInt32));
         params.dk_semaphore = dk_semaphore.data_ptr<int>();
         params.dv_semaphore = dv_semaphore.data_ptr<int>();
     }

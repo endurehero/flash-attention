@@ -2,7 +2,7 @@
 
 from typing import Optional, Tuple
 from dataclasses import dataclass, fields
-from typing import override
+from typing_extensions import override
 
 import cutlass
 from cutlass._mlir import ir

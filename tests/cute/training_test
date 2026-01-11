@@ -1,0 +1,208 @@
+import torch
+from functools import partial
+from utils import get_diff, perf, gpu_name, get_gpu_bandwidth, get_gpu_flops, get_mfu
+from torch.profiler import (
+    profile,
+    ProfilerActivity,
+    tensorboard_trace_handler  # 关键：生成 Perfetto 格式的处理器
+)
+from flash_attn.cute.interface import (
+    _flash_attn_fwd,
+    _flash_attn_bwd,
+    flash_attn_varlen_func
+)
+
+def attention_ref(
+    q: torch.Tensor,  # [total_query_len, num_q_heads, head_dim]
+    k: torch.Tensor,  # [total_key_len, num_k_heads, head_dim]
+    v: torch.Tensor,  # [total_key_len, num_k_heads, head_dim]
+    cu_seqlens_q: torch.Tensor,
+    cu_seqlens_k: torch.Tensor,
+    max_seqlen_q: int,
+    max_seqlen_k: int,
+    sm_scale: float = None,
+    causal: bool = True,
+    local_window_size: int = 0,
+    global_window_size: int = 0,
+) -> torch.Tensor:
+    total_query_len, num_q_heads, head_dim = q.shape
+    total_key_len, num_k_heads, _ = k.shape
+    num_share_q_heads = num_q_heads // num_k_heads
+    batch_size = cu_seqlens_q.shape[0] - 1
+    if sm_scale is None:
+        sm_scale = 1.0 / math.sqrt(head_dim)
+    # get mask
+    mask = torch.zeros(
+        (total_query_len, total_key_len), dtype=torch.bool, device=q.device
+    )
+    for b in range(batch_size):
+        q_len, k_len = (
+            cu_seqlens_q[b + 1] - cu_seqlens_q[b],
+            cu_seqlens_k[b + 1] - cu_seqlens_k[b],
+        )
+        k_max_ids = (
+            torch.arange(k_len, device=q.device)
+        )
+        q_ids = torch.arange(q_len, device=q.device)
+        mask[
+            cu_seqlens_q[b] : cu_seqlens_q[b + 1], cu_seqlens_k[b] : cu_seqlens_k[b + 1]
+        ] = (q_ids[:, None] >= k_max_ids[None, :]) if causal else True
+
+        if local_window_size > 0 and local_window_size < max_seqlen_k:
+            if global_window_size <= 0 or global_window_size >= max_seqlen_k:
+                mask[cu_seqlens_q[b] : cu_seqlens_q[b + 1], cu_seqlens_k[b] : cu_seqlens_k[b + 1]] &= (k_max_ids[None, :] >= (q_ids[:, None] - local_window_size))
+            else:
+                mask[cu_seqlens_q[b] : cu_seqlens_q[b + 1], cu_seqlens_k[b] : cu_seqlens_k[b + 1]] &= ((k_max_ids[None, :] >= (q_ids[:, None] - local_window_size)) | (k_max_ids[None, :] < global_window_size))
+    # attention
+    qk = (
+        torch.einsum("qhd,khd->hqk", q, k.repeat_interleave(num_share_q_heads, 1))
+        * sm_scale
+    )
+
+    
+    qk = qk.masked_fill_(~mask[None, ...], -torch.inf)
+    # query from beginning of the sequence can't attend to any compressed key
+    qk = qk.softmax(dim=-1, dtype=torch.float32)
+    qk = qk.nan_to_num(0)
+    attn_output = torch.einsum(
+        "hqk,khd->qhd", qk.to(v.dtype), v.repeat_interleave(num_share_q_heads, 1)
+    )
+    return attn_output
+
+def test():
+    torch.manual_seed(42)
+    num_heads = 8
+    num_heads_kv = 1
+    head_dim = 128
+    deterministic = True
+    sm_margin = 0
+    use_torch_profiler = False
+    local_window_size=0
+    global_window_size=0
+    
+    prof = torch.profiler.profile(
+        activities=[
+            torch.profiler.ProfilerActivity.CPU,
+            torch.profiler.ProfilerActivity.CUDA,
+        ],
+        schedule=torch.profiler.schedule(wait=0, warmup=0, active=1, repeat=1),
+        on_trace_ready=torch.profiler.tensorboard_trace_handler(f"./training_test_profile", use_gzip=True),
+        record_shapes=True,
+        with_stack=True,
+    )
+
+    seqlens = torch.LongTensor([8192, 176, 1, 23481, 23]).int().cuda()
+    cu_seqlens = torch.cat(
+        [
+            torch.zeros(1, dtype=torch.int32, device="cuda"),
+            torch.cumsum(seqlens, dim=0),
+        ],
+        dim=0,
+    ).to(torch.int32)
+    batch = seqlens.shape[0]
+    max_seqlen = seqlens.max().item()
+    
+    q = (
+        torch.empty(cu_seqlens[-1], num_heads, head_dim, device="cuda")
+        .uniform_(-1, 1)
+        .to(torch.float16)
+    )
+    k = (
+        torch.empty(cu_seqlens[-1], num_heads_kv, head_dim, device="cuda")
+        .uniform_(-1, 1)
+        .to(torch.float16)
+    )
+    v = (
+        torch.empty(cu_seqlens[-1], num_heads_kv, head_dim, device="cuda")
+        .uniform_(-1, 1)
+        .to(torch.float16)
+    )
+
+    q_ref = q.clone().detach()
+    k_ref = k.clone().detach()
+    v_ref = v.clone().detach()
+    q_ref.requires_grad_()
+    k_ref.requires_grad_()
+    v_ref.requires_grad_()
+    q_ref.retain_grad()
+    k_ref.retain_grad()
+    v_ref.retain_grad()
+    
+
+    softmax_scale = head_dim**(-0.5)
+    causal = True
+
+
+    if use_torch_profiler:
+        prof.start()
+    
+    fwd_func = partial(_flash_attn_fwd, 
+                        q=q,
+                        k=k,
+                        v=v,
+                        cu_seqlens_q=cu_seqlens,
+                        cu_seqlens_k=cu_seqlens,
+                        max_seqlen_q=max_seqlen,
+                        max_seqlen_k=max_seqlen,
+                        softmax_scale=softmax_scale,
+                        causal=causal,
+                        return_lse=True,
+                        window_size_left=local_window_size)
+    out, lse = fwd_func()
+
+    fwd_cost = perf(10, 10, fwd_func)
+    fwd_mfu = get_mfu(fwd_cost, seqlens, num_heads, head_dim)
+    print("fwd cost %.3fms, mfu %.2f" % (fwd_cost, fwd_mfu))
+
+    dout = torch.randn_like(q)
+    dq = torch.empty_like(q)
+    dk = torch.empty_like(k)
+    dv = torch.empty_like(v)
+
+    bwd_func = partial(_flash_attn_bwd,
+                        q=q,
+                        k=k,
+                        v=v,
+                        out=out,
+                        dout=dout,
+                        lse=lse,
+                        softmax_scale=softmax_scale,
+                        causal=causal,
+                        window_size_left=local_window_size,
+                        cu_seqlens_q=cu_seqlens,
+                        cu_seqlens_k=cu_seqlens,
+                        max_seqlen_q=max_seqlen,
+                        max_seqlen_k=max_seqlen,
+                        dq=dq,
+                        dk=dk,
+                        dv=dv,
+                        deterministic=deterministic)
+    bwd_func()
+
+    if deterministic:
+        dq_bak = dq.clone().detach()
+        dk_bak = dk.clone().detach()
+        dv_bak = dv.clone().detach()
+        dq.zero_()
+        dk.zero_()
+        dv.zero_()
+        bwd_func()
+        get_diff("deterministic dq", dq_bak, dq)
+        get_diff("deterministic dk", dk_bak, dk)
+        get_diff("deterministic dv", dv_bak, dv)
+
+
+    bwd_cost = perf(10, 10, bwd_func)
+    if use_torch_profiler:
+        prof.stop()
+    bwd_mfu = get_mfu(bwd_cost, seqlens, num_heads, head_dim, True)
+    print("bwd cost %.3fms, mfu %.2f"% (bwd_cost, bwd_mfu))
+    
+    out_ref = attention_ref(q_ref, k_ref, v_ref, cu_seqlens, cu_seqlens, max_seqlen, max_seqlen, softmax_scale, causal, local_window_size=local_window_size, global_window_size=global_window_size)
+    get_diff("fwd ", out_ref, out)
+    out_ref.backward(dout)
+    get_diff("dq ", q_ref.grad, dq)
+    get_diff("dk ", k_ref.grad, dk)
+    get_diff("dv ", v_ref.grad, dv)
+        
+test()
